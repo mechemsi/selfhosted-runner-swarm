@@ -1,0 +1,67 @@
+# GitHub Runner Orchestrator — Pool Configuration
+# ─────────────────────────────────────────────────
+# Each "pool" is an independent group of runners.
+# Runners in a pool register at org-level (all repos) or repo-level (one repo).
+#
+# Pool types:
+#   org-level  →  omit "repo" field  →  runners serve ALL repos in that org/account
+#   repo-level →  set "repo" field   →  runners serve only that one repo
+#
+# You can mix and match as many pools as you like.
+
+defaults:
+  runner_image:  gh-runner:latest
+  runner_labels: self-hosted,linux,x64,docker
+  max_runners:   3
+  min_idle:      1
+  memory_limit:  10g      # RAM per runner — set to (total LXC RAM - 2g) ÷ max_runners
+  cpu_limit:     0       # 0 = no CPU limit (recommended) — runners use whatever is free
+
+
+pools:
+
+  # ── Example 1: Org-level pool (recommended) ───────────────────────────────
+  # One pool that serves ALL repos under "smart".
+  # Runners register at org level — any repo's workflow can pick them up.
+  # - name:  smart-org
+  #   owner: smart
+  #   pat:   "${GITHUB_PAT}"          # reads from .env / environment
+  #   # repo: ""                      # omit repo = org-level
+  #   max_runners: 3
+  #   min_idle:    1
+
+
+  # ── Example 2: Dedicated pool for one repo ────────────────────────────────
+  # Useful if a repo needs special labels, more runners, or a different image.
+  # Uncomment and adjust:
+  #
+  - name:  smart
+    owner: smart
+    repo:  smart
+    pat:   "${GITHUB_PAT}"
+    max_runners:   10
+    min_idle:      2
+    runner_labels: self-hosted,linux,x64,docker,prestashop
+    runner_image:  gh-runner:latest   # custom image with php, composer etc
+
+
+  # ── Example 3: Different GitHub account / org ─────────────────────────────
+  # Use a separate PAT for a different account.
+  # Uncomment and adjust:
+  #
+  # - name:  client-org
+  #   owner: client-github-org
+  #   pat:   "${CLIENT_GITHUB_PAT}"   # add CLIENT_GITHUB_PAT to .env
+  #   max_runners: 2
+  #   min_idle:    0                  # no warm runners for low-volume org
+
+
+  # ── Example 4: User account (not org) ────────────────────────────────────
+  # Personal accounts work too, but registration uses /users/ API.
+  # The orchestrator handles this automatically.
+  #
+  # - name:  personal
+  #   owner: my-github-username
+  #   pat:   "${PERSONAL_GITHUB_PAT}"
+  #   max_runners: 2
+  #   min_idle:    1

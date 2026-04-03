@@ -1,0 +1,17 @@
+services:
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: gh-runner-orchestrator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - POLL_INTERVAL=${POLL_INTERVAL:-15}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # manage runner containers
+      - ./config.yml:/app/config.yml:ro             # pool config (hot-reload on restart)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
