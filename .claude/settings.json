@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(docker build *)",
+      "Bash(docker logs *)",
+      "Bash(docker ps *)",
+      "Bash(git *)",
+      "Bash(python3 -m py_compile *)",
+      "Bash(shellcheck *)",
+      "Bash(cat *)",
+      "Bash(ls *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(docker system prune *)",
+      "Bash(curl *)"
+    ]
+  },
+  "rules": [
+    ".claude/rules/code-style.md",
+    ".claude/rules/testing.md",
+    ".claude/rules/docker.md",
+    ".claude/rules/documentation.md"
+  ]
+}
