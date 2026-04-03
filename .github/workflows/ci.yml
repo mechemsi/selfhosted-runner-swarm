@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install system dependencies
+        working-directory: .
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libatomic1 > /dev/null
+
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
