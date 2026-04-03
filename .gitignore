@@ -2,3 +2,8 @@
 config.yml
 CLAUDE.local.md
 .claude/settings.local.json
+__pycache__/
+*.pyc
+*.egg-info/
+.coverage
+.pytest_cache/
