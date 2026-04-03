@@ -4,9 +4,10 @@ RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install pyyaml --break-system-packages
-
 WORKDIR /app
-COPY orchestrator.py .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
 
-CMD ["python3", "-u", "orchestrator.py"]
+COPY rorch/ rorch/
+
+CMD ["python3", "-u", "-m", "rorch"]

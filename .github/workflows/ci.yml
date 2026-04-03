@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check rorch/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check rorch/ tests/
+
+      - name: Pyright
+        run: pyright rorch/
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: pytest --cov=rorch --cov-report=term-missing -v
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build orchestrator image
+        run: docker build -t rorch-orchestrator:test ./orchestrator
+
+      - name: Build runner image
+        run: docker build -t gh-runner:test ./runner-image
+
+      - name: Verify orchestrator imports
+        run: |
+          docker run --rm rorch-orchestrator:test python3 -c "from rorch import config, github_client, docker_client, scaler; print('All modules imported successfully')"
+
+      - name: Validate docker-compose config
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

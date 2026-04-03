@@ -6,54 +6,73 @@ RORCH is a GitHub Actions runner orchestrator. It manages pools of ephemeral sel
 
 ## Tech stack
 
-- **Orchestrator**: Python 3.12 (single-file application)
+- **Orchestrator**: Python 3.12 (modular package)
 - **Runner image**: Ubuntu 22.04 + official GitHub Actions runner
 - **Infrastructure**: Docker, Docker Compose
 - **External API**: GitHub REST API v2022-11-28
+- **Linting**: ruff, pyright
+- **Testing**: pytest, pytest-cov
 
 ## Project structure
 
 ```
 rorch/
-├── orchestrator/orchestrator.py    # Main application — all orchestration logic
-├── orchestrator/Dockerfile         # Orchestrator container
-├── runner-image/Dockerfile         # Runner container image
-├── runner-image/entrypoint.sh      # Runner registration/lifecycle
-├── docker-compose.yml              # Service definition
-├── example.config.yml              # Pool configuration template
-└── .env.example                    # Environment variables template
+├── orchestrator/
+│   ├── Dockerfile
+│   ├── pyproject.toml           # Project config (ruff, pyright, pytest)
+│   ├── requirements.txt         # Runtime dependencies
+│   ├── rorch/                   # Python package
+│   │   ├── __init__.py
+│   │   ├── __main__.py          # Entry point (python -m rorch)
+│   │   ├── config.py            # PoolConfig, YAML loading, validation
+│   │   ├── protocols.py         # Protocol interfaces (DI)
+│   │   ├── github_client.py     # GitHub REST API client
+│   │   ├── docker_client.py     # Docker CLI container management
+│   │   └── scaler.py            # Scaling logic (PoolScaler)
+│   └── tests/
+│       ├── conftest.py          # Shared fixtures
+│       ├── test_config.py
+│       ├── test_docker_client.py
+│       └── test_scaler.py
+├── runner-image/
+│   ├── Dockerfile
+│   └── entrypoint.sh
+├── .github/workflows/ci.yml    # CI: ruff, pyright, pytest, docker build
+├── docker-compose.yml
+├── example.config.yml
+└── .env.example
 ```
 
 ## Running the project
 
-Everything runs in Docker. The orchestrator container manages runner containers via the Docker socket.
+Everything runs in Docker.
 
 ```bash
-# Build runner image first
 docker build -t gh-runner:latest ./runner-image
-
-# Start orchestrator
 docker-compose up -d
-
-# View logs
 docker-compose logs -f orchestrator
 ```
 
-## Code conventions
+## Development
 
-- **Python**: Follow PEP 8. Use type hints for function signatures. Wrap errors with context.
-- **Bash**: Use `set -e` in scripts. Quote all variable expansions. Check required env vars early.
-- **Docker**: Multi-stage builds when beneficial. Pin base image versions. Minimize layers.
-- **Config**: YAML for user-facing config. Environment variables for secrets.
+```bash
+# In orchestrator/ directory (or use docker):
+docker run --rm -v $(pwd)/orchestrator:/app -w /app python:3.12 bash -c "
+  pip install -e '.[dev]' &&
+  ruff check rorch/ tests/ &&
+  pyright rorch/ &&
+  pytest -v --cov=rorch
+"
+```
 
-## Architecture notes
+## Architecture (SOLID)
 
-- The orchestrator is a single Python process with one thread per pool
-- Each pool polls GitHub API independently on `POLL_INTERVAL`
-- Runners are ephemeral (`--ephemeral` flag) — one job per container
-- Docker CLI is used directly (subprocess), not the Docker SDK
-- Container naming: `gh-runner-{pool}-{uuid8}`
-- Stuck containers (>3 min without registering) are killed automatically
+- **Single Responsibility**: Each module has one concern (config, GitHub API, Docker CLI, scaling logic)
+- **Open/Closed**: New clients can be added without changing the scaler
+- **Dependency Inversion**: `PoolScaler` depends on `RunnerAPIClient` and `ContainerManager` protocols, not concrete classes
+- **Interface Segregation**: Protocols define minimal method sets
+
+Flow: `__main__.py` → creates `GitHubClient` + `DockerClient` → injects into `PoolScaler` → calls `tick()` per pool per interval
 
 ## Key formulas
 
@@ -69,15 +88,10 @@ desired = min(max_runners, max(min_idle, busy + queued))
 - GitHub PAT needs Actions (read/write) + Administration (read/write) permissions
 - Runner GID (991) must match host's docker group GID
 
-## Testing changes
-
-- Test orchestrator changes: `docker-compose up --build -d`
-- Test runner image changes: `docker build -t gh-runner:latest ./runner-image` then trigger a workflow
-- Check logs for errors: `docker-compose logs -f orchestrator`
-
 ## What NOT to do
 
 - Don't commit `.env` or `config.yml` (they contain PATs)
 - Don't use the Docker Python SDK — the project uses CLI deliberately for simplicity
 - Don't make runners non-ephemeral — the scaling logic depends on ephemeral behavior
 - Don't change container naming format without updating the prefix-based filtering
+- Don't add direct dependencies between `github_client.py` and `docker_client.py` — they communicate through `scaler.py`
