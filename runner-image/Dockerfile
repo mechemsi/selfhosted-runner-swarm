@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     lsb-release \
     sudo \
+    libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI only
