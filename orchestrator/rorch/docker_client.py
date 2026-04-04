@@ -9,7 +9,8 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import ClassVar
 
 from rorch.config import PoolConfig
 
@@ -141,7 +142,7 @@ class DockerClient:
     # Each entry maps a host path (under /opt/runner-cache/<pool>/) to
     # a container path.  Concurrent runners may read/write simultaneously
     # but the tools below all use lock files or atomic writes.
-    _CACHE_MOUNTS: list[tuple[str, str]] = [
+    _CACHE_MOUNTS: ClassVar[list[tuple[str, str]]] = [
         ("cache", "/home/runner/.cache"),        # pip, yarn, go-build, …
         ("npm", "/home/runner/.npm"),             # npm
         ("composer", "/home/runner/.composer"),    # composer (PHP)
@@ -222,7 +223,7 @@ class DockerClient:
         if not vol_ids:
             return
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         to_remove: list[str] = []
         for vid in vol_ids:
             inspect_out, code = self._capture(["volume", "inspect", vid])
@@ -242,7 +243,9 @@ class DockerClient:
         if not to_remove:
             return
 
-        log.info("🧹 Removing %d dangling volume(s) older than %.0fh", len(to_remove), max_age_hours)
+        log.info(
+            "🧹 Removing %d dangling volume(s) older than %.0fh", len(to_remove), max_age_hours
+        )
 
         def rm_vol(vid: str) -> None:
             _, code = self._capture(["volume", "rm", vid])
