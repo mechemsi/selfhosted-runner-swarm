@@ -143,10 +143,10 @@ class DockerClient:
     # a container path.  Concurrent runners may read/write simultaneously
     # but the tools below all use lock files or atomic writes.
     _CACHE_MOUNTS: ClassVar[list[tuple[str, str]]] = [
-        ("cache", "/home/runner/.cache"),        # pip, yarn, go-build, …
-        ("npm", "/home/runner/.npm"),             # npm
-        ("composer", "/home/runner/.composer"),    # composer (PHP)
-        ("nuget", "/home/runner/.nuget"),          # dotnet
+        ("cache", "/home/runner/.cache"),  # pip, yarn, go-build, …
+        ("npm", "/home/runner/.npm"),  # npm
+        ("composer", "/home/runner/.composer"),  # composer (PHP)
+        ("nuget", "/home/runner/.nuget"),  # dotnet
     ]
 
     def spawn_runner(self, pool: PoolConfig) -> bool:
@@ -181,18 +181,20 @@ class DockerClient:
         for host_dir, container_dir in self._CACHE_MOUNTS:
             args.extend(["-v", f"{cache_base}/{host_dir}:{container_dir}"])
 
-        args.extend([
-            "-e",
-            f"GITHUB_PAT={pool.pat}",
-            "-e",
-            f"GITHUB_OWNER={pool.owner}",
-            "-e",
-            f"GITHUB_REPO={pool.repo}",
-            "-e",
-            f"RUNNER_NAME={name}",
-            "-e",
-            f"RUNNER_LABELS={pool.runner_labels}",
-        ])
+        args.extend(
+            [
+                "-e",
+                f"GITHUB_PAT={pool.pat}",
+                "-e",
+                f"GITHUB_OWNER={pool.owner}",
+                "-e",
+                f"GITHUB_REPO={pool.repo}",
+                "-e",
+                f"RUNNER_NAME={name}",
+                "-e",
+                f"RUNNER_LABELS={pool.runner_labels}",
+            ]
+        )
 
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])
