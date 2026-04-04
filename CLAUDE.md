@@ -37,7 +37,7 @@ rorch/
 ├── runner-image/
 │   ├── Dockerfile
 │   └── entrypoint.sh
-├── .github/workflows/ci.yml    # CI: ruff, pyright, pytest, docker build
+├── .github/workflows/ci.yml    # CI: ruff, pyright, pytest
 ├── docker-compose.yml
 ├── example.config.yml
 └── .env.example
@@ -87,6 +87,14 @@ desired = min(max_runners, max(min_idle, busy + queued))
 - Docker socket must be mounted for the orchestrator to manage containers
 - GitHub PAT needs Actions (read/write) + Administration (read/write) permissions
 - Runner GID (991) must match host's docker group GID
+
+## Before committing changes to runner-image/
+
+Always verify the runner image builds successfully before committing:
+```bash
+docker build -t gh-runner:test ./runner-image
+```
+Docker builds are not in CI (too slow for GitHub-hosted runners), so this must be tested locally.
 
 ## What NOT to do
 

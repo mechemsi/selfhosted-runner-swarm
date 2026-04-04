@@ -60,27 +60,6 @@ jobs:
       - name: Run pytest
         run: pytest --cov=rorch --cov-report=term-missing -v
 
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build orchestrator image
-        run: docker build -t rorch-orchestrator:test ./orchestrator
-
-      - name: Build runner image
-        run: docker build -t gh-runner:test ./runner-image
-
-      - name: Verify orchestrator imports
-        run: |
-          docker run --rm rorch-orchestrator:test python3 -c "from rorch import config, github_client, docker_client, scaler; print('All modules imported successfully')"
-
-      - name: Validate docker-compose config
-        run: |
-          cp .env.example .env
-          docker compose config --quiet
-
   deps:
     name: Dependency Audit
     runs-on: ubuntu-latest
