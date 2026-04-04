@@ -3,11 +3,13 @@
 
 """Docker container management via CLI."""
 
+import json
 import logging
 import subprocess
 import threading
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from rorch.config import PoolConfig
 
@@ -86,7 +88,7 @@ class DockerClient:
             return
 
         def rm(name: str) -> None:
-            self._capture(["rm", name])
+            self._capture(["rm", "-v", name])
             log.info("  🗑  rm %s", name)
 
         self._run_parallel(rm, names, timeout=15)
@@ -130,7 +132,7 @@ class DockerClient:
         log.info("  Killing %d stuck container(s) in parallel", len(to_kill))
 
         def kill(name: str) -> None:
-            self._capture(["rm", "-f", name])
+            self._capture(["rm", "-f", "-v", name])
             log.info("  💀  Killed %s", name)
 
         self._run_parallel(kill, to_kill, timeout=15)
@@ -184,6 +186,51 @@ class DockerClient:
             return True
         log.error("  ✗  Failed to start %s", name)
         return False
+
+    def prune_images(self, until: str = "5h") -> None:
+        """Remove dangling images older than the given threshold."""
+        out, code = self._capture(["image", "prune", "-f", "--filter", f"until={until}"])
+        if code == 0 and out:
+            log.info("🧹 Image prune: %s", out)
+
+    def prune_volumes(self, max_age_hours: float = 5.0) -> None:
+        """Remove dangling volumes older than max_age_hours."""
+        out, _ = self._capture(["volume", "ls", "--filter", "dangling=true", "-q"])
+        if not out:
+            return
+
+        vol_ids = [v for v in out.split("\n") if v]
+        if not vol_ids:
+            return
+
+        now = datetime.now(tz=timezone.utc)
+        to_remove: list[str] = []
+        for vid in vol_ids:
+            inspect_out, code = self._capture(["volume", "inspect", vid])
+            if code != 0:
+                continue
+            try:
+                info = json.loads(inspect_out)
+                created = info[0]["CreatedAt"] if isinstance(info, list) else info["CreatedAt"]
+                # Docker returns e.g. "2026-04-04T06:12:34+00:00" or "2026-04-04T06:12:34Z"
+                created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                age_hours = (now - created_dt).total_seconds() / 3600
+                if age_hours >= max_age_hours:
+                    to_remove.append(vid)
+            except Exception:
+                continue
+
+        if not to_remove:
+            return
+
+        log.info("🧹 Removing %d dangling volume(s) older than %.0fh", len(to_remove), max_age_hours)
+
+        def rm_vol(vid: str) -> None:
+            _, code = self._capture(["volume", "rm", vid])
+            if code == 0:
+                log.info("🧹 Removed volume %s", vid)
+
+        self._run_parallel(rm_vol, to_remove, timeout=15)
 
     @staticmethod
     def _run_parallel(fn: Callable[[str], None], items: list[str], timeout: int = 15) -> None:

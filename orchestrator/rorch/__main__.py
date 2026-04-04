@@ -45,15 +45,26 @@ def main() -> None:
             log.info("    PAT: %s...", p.pat[:20])
         else:
             log.info("    PAT: %s", "SET" if p.pat else "MISSING")
-    log.info("Poll interval: %ds", poll)
+    prune_every = max(1, 900 // poll)  # ~every 15 minutes
+    log.info("Poll interval: %ds  (image prune every %d ticks)", poll, prune_every)
     log.info("=" * 60)
 
+    tick_count = 0
     while True:
         for pool in pools:
             try:
                 scaler.tick(pool)
             except Exception:
                 log.error("[%s] Unhandled error", pool.name, exc_info=True)
+
+        tick_count += 1
+        if tick_count % prune_every == 0:
+            try:
+                docker.prune_images()
+                docker.prune_volumes()
+            except Exception:
+                log.error("Docker prune failed", exc_info=True)
+
         time.sleep(poll)
 
 
