@@ -14,6 +14,14 @@ for var in "${required_vars[@]}"; do
     fi
 done
 
+# ── Fix ownership of mounted cache dirs ──────────────────────────────────────
+# Docker creates bind-mount host dirs as root; the runner user needs write access.
+for d in ~/.cache ~/.npm ~/.composer ~/.nuget; do
+    if [ -d "$d" ] && [ ! -w "$d" ]; then
+        sudo chown -R runner:runner "$d"
+    fi
+done
+
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64,docker}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 GITHUB_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}"

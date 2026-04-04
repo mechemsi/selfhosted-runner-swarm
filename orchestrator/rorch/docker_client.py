@@ -137,11 +137,24 @@ class DockerClient:
 
         self._run_parallel(kill, to_kill, timeout=15)
 
+    # Persistent cache mounts shared across ephemeral runners in a pool.
+    # Each entry maps a host path (under /opt/runner-cache/<pool>/) to
+    # a container path.  Concurrent runners may read/write simultaneously
+    # but the tools below all use lock files or atomic writes.
+    _CACHE_MOUNTS: list[tuple[str, str]] = [
+        ("cache", "/home/runner/.cache"),        # pip, yarn, go-build, …
+        ("npm", "/home/runner/.npm"),             # npm
+        ("composer", "/home/runner/.composer"),    # composer (PHP)
+        ("nuget", "/home/runner/.nuget"),          # dotnet
+    ]
+
     def spawn_runner(self, pool: PoolConfig) -> bool:
         """Start a new ephemeral runner container."""
         uid = uuid.uuid4().hex[:8]
         name = f"{pool.container_prefix}-{uid}"
         log.info("  ▶  Spawning %s", name)
+
+        cache_base = f"/opt/runner-cache/{pool.container_prefix}"
 
         args = [
             "run",
@@ -162,6 +175,12 @@ class DockerClient:
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
             "/opt/hostedtoolcache:/opt/hostedtoolcache",
+        ]
+
+        for host_dir, container_dir in self._CACHE_MOUNTS:
+            args.extend(["-v", f"{cache_base}/{host_dir}:{container_dir}"])
+
+        args.extend([
             "-e",
             f"GITHUB_PAT={pool.pat}",
             "-e",
@@ -172,7 +191,7 @@ class DockerClient:
             f"RUNNER_NAME={name}",
             "-e",
             f"RUNNER_LABELS={pool.runner_labels}",
-        ]
+        ])
 
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])
