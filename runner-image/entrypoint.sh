@@ -22,6 +22,30 @@ for d in ~/.cache ~/.npm ~/.composer ~/.nuget; do
     fi
 done
 
+# ── Warm toolcache from staged binaries ──────────────────────────────────────
+# Pre-built Node/Python are staged in the image at /opt/toolcache-staging.
+# Copy them into the shared /opt/hostedtoolcache (host bind-mount) if missing.
+# Only the first runner to boot does the copy; subsequent runners find them.
+STAGING="/opt/toolcache-staging"
+TOOLCACHE="/opt/hostedtoolcache"
+if [ -d "$STAGING" ]; then
+    for tool_dir in "$STAGING"/*/; do
+        tool=$(basename "$tool_dir")
+        for version_dir in "$tool_dir"/*/; do
+            version=$(basename "$version_dir")
+            dest="$TOOLCACHE/$tool/$version"
+            marker="$dest/x64.complete"
+            if [ ! -f "$marker" ]; then
+                echo "==> Warming toolcache: $tool $version"
+                sudo mkdir -p "$dest"
+                sudo cp -a "$version_dir"* "$dest/"
+                sudo cp -a "$STAGING/$tool/$version/x64.complete" "$dest/" 2>/dev/null || true
+                sudo chown -R runner:runner "$dest"
+            fi
+        done
+    done
+fi
+
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64,docker}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 GITHUB_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}"
