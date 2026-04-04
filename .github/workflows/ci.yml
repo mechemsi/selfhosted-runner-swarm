@@ -9,7 +9,7 @@ on:
 jobs:
   license:
     name: License Headers
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -18,7 +18,7 @@ jobs:
 
   lint:
     name: Lint & Type Check
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: orchestrator
@@ -28,12 +28,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install system dependencies
-        working-directory: .
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libatomic1 > /dev/null
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
@@ -49,7 +43,7 @@ jobs:
 
   test:
     name: Tests
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: orchestrator
@@ -68,7 +62,7 @@ jobs:
 
   docker:
     name: Docker Build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +83,7 @@ jobs:
 
   deps:
     name: Dependency Audit
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       issues: write
