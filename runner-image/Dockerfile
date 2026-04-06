@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     sudo \
     libatomic1 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI only
