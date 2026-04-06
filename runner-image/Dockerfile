@@ -60,9 +60,10 @@ RUN apt-get update && apt-get install -y \
        | tar -xJ -C /tmp \
     && cd "/tmp/Python-${PYTHON_VERSION}" \
     && ./configure --prefix="/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64" \
-                   --enable-optimizations --with-lto \
+                   --enable-optimizations --with-lto --with-ensurepip=install \
     && make -j"$(nproc)" \
     && make install \
+    && ln -sf pip3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" \
     && rm -rf "/tmp/Python-${PYTHON_VERSION}" \
     && touch "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64.complete" \
     && apt-get purge -y build-essential \
