@@ -81,8 +81,9 @@ RUN ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" /us
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" /usr/local/bin/pip
 
 # ── Install common CI tools globally ────────────────────────────────────────
-RUN /usr/local/bin/pip install --no-cache-dir ruff \
-    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/ruff" /usr/local/bin/ruff
+RUN /usr/local/bin/pip install --no-cache-dir ruff pyright \
+    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/ruff" /usr/local/bin/ruff \
+    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pyright" /usr/local/bin/pyright
 
 # Create runner user
 # GID 991 must match the host's docker group GID for socket access
