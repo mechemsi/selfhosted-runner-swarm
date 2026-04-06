@@ -65,11 +65,23 @@ RUN apt-get update && apt-get install -y \
     && make -j"$(nproc)" \
     && make install \
     && ln -sf pip3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" \
+    && ln -sf python3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" \
     && rm -rf "/tmp/Python-${PYTHON_VERSION}" \
     && touch "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64.complete" \
     && apt-get purge -y build-essential \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Make pre-staged Python 3.11 the default system python ───────────────────
+# Ubuntu 22.04 ships Python 3.10 which lacks datetime.UTC (3.11+).
+# Symlink the pre-staged 3.11 onto /usr/local/bin so it shadows /usr/bin/python3.
+RUN ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" /usr/local/bin/python3 \
+    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" /usr/local/bin/python \
+    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip3" /usr/local/bin/pip3 \
+    && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" /usr/local/bin/pip
+
+# ── Install common CI tools globally ────────────────────────────────────────
+RUN /usr/local/bin/pip install --no-cache-dir ruff
 
 # Create runner user
 # GID 991 must match the host's docker group GID for socket access
