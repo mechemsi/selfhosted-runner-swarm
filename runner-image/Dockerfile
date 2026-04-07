@@ -52,6 +52,11 @@ RUN mkdir -p "/opt/toolcache-staging/node/${NODE_VERSION}/x64" \
        | tar -xJ --strip-components=1 -C "/opt/toolcache-staging/node/${NODE_VERSION}/x64" \
     && touch "/opt/toolcache-staging/node/${NODE_VERSION}/x64.complete"
 
+# Make pre-staged Node.js the default system node
+RUN ln -sf "/opt/toolcache-staging/node/${NODE_VERSION}/x64/bin/node" /usr/local/bin/node \
+    && ln -sf "/opt/toolcache-staging/node/${NODE_VERSION}/x64/bin/npm" /usr/local/bin/npm \
+    && ln -sf "/opt/toolcache-staging/node/${NODE_VERSION}/x64/bin/npx" /usr/local/bin/npx
+
 # ── Pre-stage Python for actions/setup-python ────────────────────────────────
 # Build minimal Python from source into toolcache layout.
 RUN apt-get update && apt-get install -y \
