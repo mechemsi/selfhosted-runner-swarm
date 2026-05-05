@@ -61,6 +61,7 @@ def main() -> None:
         if tick_count % prune_every == 0:
             try:
                 docker.prune_images()
+                docker.prune_build_cache()
                 docker.prune_volumes()
             except Exception:
                 log.error("Docker prune failed", exc_info=True)

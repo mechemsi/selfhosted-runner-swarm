@@ -209,11 +209,28 @@ class DockerClient:
         log.error("  ✗  Failed to start %s", name)
         return False
 
-    def prune_images(self, until: str = "5h") -> None:
-        """Remove dangling images older than the given threshold."""
-        out, code = self._capture(["image", "prune", "-f", "--filter", f"until={until}"])
+    def prune_images(self, until: str = "24h", all_unused: bool = True) -> None:
+        """Remove unused images older than the given threshold.
+
+        With all_unused=True (default), removes both dangling images and tagged
+        images not referenced by any container. The until filter protects images
+        created more recently than the threshold.
+        """
+        args = ["image", "prune"]
+        if all_unused:
+            args.append("-a")
+        args.extend(["-f", "--filter", f"until={until}"])
+        out, code = self._capture(args)
         if code == 0 and out:
             log.info("🧹 Image prune: %s", out)
+
+    def prune_build_cache(self, until: str = "24h") -> None:
+        """Remove build cache entries older than the given threshold."""
+        out, code = self._capture(
+            ["builder", "prune", "-f", "--filter", f"until={until}"]
+        )
+        if code == 0 and out:
+            log.info("🧹 Build cache prune: %s", out)
 
     def prune_volumes(self, max_age_hours: float = 5.0) -> None:
         """Remove dangling volumes older than max_age_hours."""
