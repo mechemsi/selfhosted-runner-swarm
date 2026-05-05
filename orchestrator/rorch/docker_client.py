@@ -226,9 +226,7 @@ class DockerClient:
 
     def prune_build_cache(self, until: str = "24h") -> None:
         """Remove build cache entries older than the given threshold."""
-        out, code = self._capture(
-            ["builder", "prune", "-f", "--filter", f"until={until}"]
-        )
+        out, code = self._capture(["builder", "prune", "-f", "--filter", f"until={until}"])
         if code == 0 and out:
             log.info("🧹 Build cache prune: %s", out)
 
