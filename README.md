@@ -156,6 +156,40 @@ rorch/
 - Runner containers need the `runner` user in the docker group (GID 991 by default)
 - Adjust GID in `runner-image/Dockerfile` if your host uses a different docker GID
 
+## Auto-start on server boot
+
+The orchestrator container has `restart: unless-stopped`, so once started it will survive Docker daemon restarts. To bring the compose project up automatically after a host reboot, install a systemd unit.
+
+Create `/etc/systemd/system/rorch.service` (adjust `WorkingDirectory` to your checkout path):
+
+```ini
+[Unit]
+Description=RORCH orchestrator
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/domas/pr/rorch
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rorch.service
+sudo systemctl status rorch.service
+```
+
+After a reboot, `docker compose ps` should show the orchestrator running without manual intervention.
+
 ## License
 
 MIT
