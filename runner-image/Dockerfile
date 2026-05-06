@@ -91,8 +91,19 @@ RUN /usr/local/bin/pip install --no-cache-dir ruff pyright \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pyright" /usr/local/bin/pyright
 
 # Create runner user
-# GID 991 must match the host's docker group GID for socket access
-RUN groupadd -f -g 991 docker \
+# DOCKER_GID must match the host's docker group GID so the runner user can
+# access the mounted /var/run/docker.sock. Override at build time:
+#   --build-arg DOCKER_GID=$(getent group docker | cut -d: -f3)
+# Default 988 matches modern Ubuntu/Debian Docker installs; older hosts differ.
+# If a base-image group already owns this GID, rename it to "docker" so the
+# runner user inherits socket access without GID collisions.
+ARG DOCKER_GID=988
+RUN if getent group "${DOCKER_GID}" >/dev/null; then \
+        existing="$(getent group "${DOCKER_GID}" | cut -d: -f1)"; \
+        if [ "${existing}" != "docker" ]; then groupmod -n docker "${existing}"; fi; \
+    else \
+        groupadd -g "${DOCKER_GID}" docker; \
+    fi \
     && useradd -m -s /bin/bash runner \
     && usermod -aG sudo runner \
     && usermod -aG docker runner \

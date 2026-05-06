@@ -50,8 +50,8 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 git clone https://github.com/your-org/rorch.git
 cd rorch
 
-# 2. Build the runner image
-docker build -t gh-runner:latest ./runner-image
+# 2. Build the runner image (auto-detects host docker GID)
+./scripts/build-runner.sh
 
 # 3. Configure
 cp .env.example .env        # add your GITHUB_PAT
@@ -153,8 +153,9 @@ rorch/
 
 **Docker socket errors:**
 - Ensure Docker socket is at `/var/run/docker.sock`
-- Runner containers need the `runner` user in the docker group (GID 991 by default)
-- Adjust GID in `runner-image/Dockerfile` if your host uses a different docker GID
+- The runner image must be built with the host's docker group GID. `scripts/build-runner.sh` detects this automatically via `getent group docker`.
+- If you ran `docker build` directly, pass it explicitly: `docker build --build-arg DOCKER_GID=$(getent group docker | cut -d: -f3) -t gh-runner:latest ./runner-image`
+- Symptom of GID mismatch: runners exit immediately with `Cannot connect to Docker socket at /var/run/docker.sock` in the container logs.
 
 ## Auto-start on server boot
 
