@@ -1,3 +1,5 @@
+<!-- DO NOT EDIT — generated from ~/brain on 2026-06-17. Edit brain/projects/rorch/ instead. -->
+
 # CLAUDE.md — Project Instructions for Claude Code
 
 ## Project overview
