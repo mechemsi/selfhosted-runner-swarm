@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 Mechemsi. All rights reserved.
+# Licensed under the MIT License. See LICENSE file in the project root.
+
 #
 # Build the gh-runner image with DOCKER_GID matching the host's docker group.
 # Required so the runner user inside the container can access the mounted

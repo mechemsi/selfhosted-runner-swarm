@@ -54,8 +54,7 @@ class GitHubClient:
         while True:
             data = self._get(
                 pool.pat,
-                "/user/repos?affiliation=owner&visibility=all"
-                f"&per_page=100&page={page}",
+                f"/user/repos?affiliation=owner&visibility=all&per_page=100&page={page}",
             )
             if not isinstance(data, list):
                 return []
