@@ -9,7 +9,7 @@ related:
 
 # Personal account all-repositories runner pool implementation
 
-RORCH now accepts `scope: personal` for a pool. Each poll discovers active repositories owned
+RORCH now accepts `scope: personal` for a pool. Periodic discovery finds active repositories owned
 by the authenticated GitHub account through the paginated `/user/repos` endpoint. The scaler
 derives repository-scoped runtime pools, reuses the existing queue and runner APIs, and assigns
 available capacity round-robin among repositories with demand.
@@ -21,7 +21,7 @@ in a personal account.
 ## Repository discovery cache
 
 Repository lists use a bounded in-memory cache with a default 600-second TTL. Queue and runner
-polling remains controlled by `POLL_INTERVAL`. Empty repository lists are cached, successful
+polling remains controlled by `github_poll_interval`. Empty repository lists are cached, successful
 entries may be stale for at most the configured TTL during normal operation. A failed refresh
 may serve the last known list beyond the TTL while retrying on the next poll. The cache is keyed
 by pool, owner, and a digest of the PAT, is capped at 128 entries, and is intentionally cleared
@@ -39,8 +39,22 @@ avoid making a capacity decision from incomplete state. Tick and per-repository 
 included in operational logs. Docker cleanup helpers are also capped at four concurrent workers
 to prevent nested repository checks from creating an unbounded number of cleanup threads.
 
+## GitHub API rate budget
+
+Each pool has a 60-second GitHub scan interval independent of the 15-second orchestrator loop.
+The HTTP client stores authorized GET responses and their ETags in a bounded 2,048-entry cache;
+unchanged `304 Not Modified` responses reuse the cached body without consuming primary quota.
+GitHub requests are serialized to avoid secondary concurrency limits, and mutative requests are
+paced one second apart.
+
+Rate-limit headers form an enforced circuit breaker. The client preserves 100 requests by
+default, stops until `X-RateLimit-Reset` when primary quota is depleted, honors `Retry-After`,
+and uses bounded exponential cooldown for secondary limits without an explicit retry time.
+Rate-limit failures propagate as typed errors, causing the pool to skip scaling instead of
+treating unavailable queue data as zero jobs.
+
 ## Verification
 
 - Ruff: passed.
 - Pyright: passed with no errors (one environment warning for unavailable YAML source stubs).
-- Pytest: 59 tests passed.
+- Pytest: 68 tests passed.

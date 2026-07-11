@@ -23,6 +23,7 @@ class PoolConfig:
     repo: str = ""
     scope: str = "organization"
     repo_discovery_ttl: int = 600
+    github_poll_interval: int = 60
     repo_check_workers: int = 6
     runner_operation_workers: int = 4
     max_runners: int = 3
@@ -118,6 +119,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 repo_discovery_ttl=int(
                     p.get("repo_discovery_ttl", defaults.get("repo_discovery_ttl", 600))
                 ),
+                github_poll_interval=int(
+                    p.get("github_poll_interval", defaults.get("github_poll_interval", 60))
+                ),
                 repo_check_workers=int(
                     p.get("repo_check_workers", defaults.get("repo_check_workers", 6))
                 ),
@@ -147,6 +151,7 @@ def _load_from_env() -> PoolConfig:
         repo=os.environ.get("GITHUB_REPO", ""),
         scope=scope,
         repo_discovery_ttl=int(os.environ.get("REPO_DISCOVERY_TTL", "600")),
+        github_poll_interval=int(os.environ.get("GITHUB_POLL_INTERVAL", "60")),
         repo_check_workers=int(os.environ.get("REPO_CHECK_WORKERS", "6")),
         runner_operation_workers=int(os.environ.get("RUNNER_OPERATION_WORKERS", "4")),
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
@@ -177,6 +182,12 @@ def validate_pools(pools: list[PoolConfig]) -> None:
             ok = False
         if p.repo_discovery_ttl < 0:
             log.error("Pool '%s': repo_discovery_ttl cannot be negative", p.name)
+            ok = False
+        if p.github_poll_interval != 0 and not 15 <= p.github_poll_interval <= 3600:
+            log.error(
+                "Pool '%s': github_poll_interval must be 0 or between 15 and 3600",
+                p.name,
+            )
             ok = False
         if not 1 <= p.repo_check_workers <= 32:
             log.error("Pool '%s': repo_check_workers must be between 1 and 32", p.name)

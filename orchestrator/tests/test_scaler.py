@@ -3,12 +3,14 @@
 
 """Tests for the scaling logic."""
 
+import time
 from threading import Barrier
 from unittest.mock import MagicMock
 
 import pytest
 
 from rorch.config import PoolConfig
+from rorch.errors import GitHubRateLimitError
 from rorch.protocols import RunnerInfo
 from rorch.scaler import PoolScaler
 
@@ -131,6 +133,45 @@ class TestCleanupCalled:
 
 
 class TestPersonalAccountScaling:
+    def test_defers_repository_scans_until_poll_interval(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.github_poll_interval = 60
+        clock = MagicMock(side_effect=[100.0, 120.0, 161.0])
+        mock_github.list_repositories.return_value = ["alpha"]
+        mock_github.list_runners.return_value = []
+        mock_docker.running_containers.return_value = []
+
+        scaler = PoolScaler(mock_github, mock_docker, clock=clock)
+        scaler.tick(personal_pool)
+        scaler.tick(personal_pool)
+        scaler.tick(personal_pool)
+
+        assert mock_github.list_runners.call_count == 2
+
+    def test_rate_limit_pauses_later_scans(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.github_poll_interval = 0
+        clock = MagicMock(side_effect=[100.0, 101.0])
+        mock_github.list_repositories.return_value = ["alpha"]
+        mock_github.list_runners.side_effect = GitHubRateLimitError(
+            time.time() + 120,
+            "rate limit test",
+        )
+
+        scaler = PoolScaler(mock_github, mock_docker, clock=clock)
+        scaler.tick(personal_pool)
+        scaler.tick(personal_pool)
+
+        mock_github.list_runners.assert_called_once()
+
     def test_checks_repositories_in_parallel(
         self,
         mock_github: MagicMock,
@@ -218,6 +259,7 @@ class TestPersonalAccountScaling:
         mock_docker: MagicMock,
         personal_pool: PoolConfig,
     ) -> None:
+        personal_pool.github_poll_interval = 0
         clock = MagicMock(side_effect=[100.0, 200.0])
         scaler = PoolScaler(mock_github, mock_docker, clock=clock)
         mock_github.list_repositories.return_value = ["alpha"]
@@ -234,6 +276,7 @@ class TestPersonalAccountScaling:
         mock_docker: MagicMock,
         personal_pool: PoolConfig,
     ) -> None:
+        personal_pool.github_poll_interval = 0
         personal_pool.repo_discovery_ttl = 600
         clock = MagicMock(side_effect=[100.0, 701.0])
         scaler = PoolScaler(mock_github, mock_docker, clock=clock)
@@ -253,6 +296,7 @@ class TestPersonalAccountScaling:
         mock_docker: MagicMock,
         personal_pool: PoolConfig,
     ) -> None:
+        personal_pool.github_poll_interval = 0
         personal_pool.repo_discovery_ttl = 600
         clock = MagicMock(side_effect=[100.0, 701.0])
         scaler = PoolScaler(mock_github, mock_docker, clock=clock)

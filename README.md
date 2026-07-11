@@ -71,8 +71,10 @@ docker-compose logs -f orchestrator
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_PAT` | — | Primary GitHub PAT (required) |
-| `POLL_INTERVAL` | `15` | Seconds between queue checks |
+| `POLL_INTERVAL` | `15` | Main loop wake-up interval |
 | `REPO_DISCOVERY_TTL` | `600` | Personal repository-list cache lifetime in seconds |
+| `GITHUB_POLL_INTERVAL` | `60` | Minimum seconds between GitHub scans for each pool |
+| `GITHUB_RATE_LIMIT_RESERVE` | `100` | Stop before consuming the final PAT requests |
 | `REPO_CHECK_WORKERS` | `6` | Maximum repositories inspected concurrently |
 | `RUNNER_OPERATION_WORKERS` | `4` | Maximum concurrent runner removals and provisions |
 
@@ -86,6 +88,7 @@ defaults:
   runner_labels: self-hosted,linux,x64,docker
   max_runners: 3
   min_idle: 1
+  github_poll_interval: 60
   repo_check_workers: 6
   runner_operation_workers: 4
   memory_limit: 10g
@@ -109,7 +112,7 @@ pools:
 | Repo-level | `owner` + `repo` | Single repository |
 
 Personal pools cache repository discovery for 10 minutes by default while continuing to poll
-known repositories every `POLL_INTERVAL`. Set `repo_discovery_ttl` per pool, or set it to `0`
+known repositories every `github_poll_interval`. Set `repo_discovery_ttl` per pool, or set it to `0`
 to disable caching. If a refresh fails, RORCH continues with the last successful list. The cache
 is in memory and starts empty after a restart. GitHub runners remain repository-scoped, but
 RORCH chooses the repository automatically and applies `max_runners` across the whole pool.
@@ -122,6 +125,20 @@ RORCH makes one account-wide capacity decision, then removes stale runners and p
 ones through a separate bounded worker pool. This preserves `max_runners` while avoiding serial
 waits across large personal accounts. Set `repo_check_workers` and `runner_operation_workers`
 per pool to tune concurrency; limits are 32 and 16 respectively.
+
+### GitHub API rate budget
+
+RORCH limits each pool to one GitHub scan per `github_poll_interval` (60 seconds by default),
+even when the main loop wakes every 15 seconds. Authenticated GET responses are cached with
+their `ETag`; unchanged `304 Not Modified` responses do not consume GitHub's primary rate limit.
+Outbound GitHub requests are serialized to avoid secondary concurrency limits, while Docker
+work remains parallel.
+
+Every response updates the token's remaining/reset budget. RORCH stops when
+`GITHUB_RATE_LIMIT_RESERVE` requests remain, resumes after `X-RateLimit-Reset`, and honors
+`Retry-After` for secondary limits. During a cooldown, scaling is skipped rather than interpreting
+failed API calls as zero queued jobs. Conditional-response caching is in memory, bounded to 2,048
+entries, and cleared on restart.
 
 See [`example.config.yml`](example.config.yml) for detailed examples with comments.
 
@@ -171,6 +188,11 @@ rorch/
 - Default timeout is 3 minutes for registration
 - Slow networks or rate-limited APIs can cause this
 - Check orchestrator logs for "stuck" messages
+
+**GitHub API rate limited:**
+- RORCH pauses automatically until GitHub's reset or retry time
+- Increase `github_poll_interval` for accounts with many repositories
+- Keep `GITHUB_RATE_LIMIT_RESERVE` above zero when a PAT is shared with other tools
 
 **Docker socket errors:**
 - Ensure Docker socket is at `/var/run/docker.sock`

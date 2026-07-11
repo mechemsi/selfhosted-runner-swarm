@@ -11,6 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from rorch.config import PoolConfig
+from rorch.errors import GitHubRateLimitError
 from rorch.protocols import ContainerManager, RunnerAPIClient, RunnerInfo
 
 log = logging.getLogger(__name__)
@@ -56,15 +57,37 @@ class PoolScaler:
         self._docker = docker
         self._clock = clock
         self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
+        self._next_poll_at: dict[tuple[str, str, str, bytes], float] = {}
 
     def tick(self, pool: PoolConfig) -> None:
         """Run one complete scaling cycle for a pool."""
         started = time.monotonic()
+        now = self._clock()
+        pool_key = self._pool_key(pool)
+        next_poll_at = self._next_poll_at.get(pool_key, 0.0)
+        if now < next_poll_at:
+            log.debug("[%s] GitHub scan deferred for %.1fs", pool.name, next_poll_at - now)
+            return
+        if pool.github_poll_interval > 0:
+            self._next_poll_at[pool_key] = now + pool.github_poll_interval
+
         try:
             if pool.is_personal_level:
-                self._tick_personal(pool)
+                self._tick_personal(pool, now)
             else:
                 self._tick_single(pool)
+        except GitHubRateLimitError as error:
+            retry_after = max(1.0, error.retry_at_epoch - time.time())
+            self._next_poll_at[pool_key] = max(
+                self._next_poll_at.get(pool_key, 0.0),
+                now + retry_after,
+            )
+            log.warning(
+                "[%s] GitHub scan paused for %.0fs: %s",
+                pool.name,
+                retry_after,
+                error.reason,
+            )
         finally:
             log.info("[%s] Tick completed in %.2fs", pool.name, time.monotonic() - started)
 
@@ -78,9 +101,9 @@ class PoolScaler:
             pool.runner_operation_workers,
         )
 
-    def _tick_personal(self, pool: PoolConfig) -> None:
+    def _tick_personal(self, pool: PoolConfig, now: float) -> None:
         """Scale repository runners under one personal-account capacity limit."""
-        repo_names = self._get_personal_repositories(pool)
+        repo_names = self._get_personal_repositories(pool, now)
         if not repo_names:
             log.warning("[%s] No accessible repositories found for %s", pool.name, pool.owner)
             return
@@ -140,6 +163,7 @@ class PoolScaler:
         worker_count = min(max_workers, len(pools))
         inspections: list[PoolInspection] = []
         failed = False
+        rate_limit_error: GitHubRateLimitError | None = None
 
         with ThreadPoolExecutor(
             max_workers=worker_count,
@@ -150,6 +174,8 @@ class PoolScaler:
                 repo_pool = futures[future]
                 try:
                     inspections.append(future.result())
+                except GitHubRateLimitError as error:
+                    rate_limit_error = error
                 except Exception:
                     failed = True
                     log.error(
@@ -158,6 +184,8 @@ class PoolScaler:
                         exc_info=True,
                     )
 
+        if rate_limit_error is not None:
+            raise rate_limit_error
         if failed:
             return None
         return sorted(inspections, key=lambda item: item.pool.repo)
@@ -260,12 +288,11 @@ class PoolScaler:
         log.warning("  ✗  Failed to deregister %s", runner.name)
         return False
 
-    def _get_personal_repositories(self, pool: PoolConfig) -> list[str]:
+    def _get_personal_repositories(self, pool: PoolConfig, now: float) -> list[str]:
         """Return cached repositories, refreshing after the configured TTL."""
         token_digest = hashlib.sha256(pool.pat.encode()).digest()
         cache_key = (pool.name, pool.owner.lower(), token_digest)
         cached = self._repository_cache.get(cache_key)
-        now = self._clock()
 
         if cached is not None and now < cached.expires_at:
             log.debug("[%s] Repository discovery cache hit", pool.name)
@@ -303,6 +330,15 @@ class PoolScaler:
             pool.repo_discovery_ttl,
         )
         return repositories
+
+    @staticmethod
+    def _pool_key(pool: PoolConfig) -> tuple[str, str, str, bytes]:
+        return (
+            pool.name,
+            pool.owner.lower(),
+            pool.repo.lower(),
+            hashlib.sha256(pool.pat.encode()).digest(),
+        )
 
     @staticmethod
     def _log_inspection(inspection: PoolInspection) -> None:

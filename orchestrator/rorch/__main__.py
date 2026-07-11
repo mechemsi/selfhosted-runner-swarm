@@ -25,7 +25,8 @@ def main() -> None:
     pools = load_config()
     validate_pools(pools)
 
-    github = GitHubClient()
+    rate_limit_reserve = max(0, int(os.environ.get("GITHUB_RATE_LIMIT_RESERVE", "100")))
+    github = GitHubClient(rate_limit_reserve=rate_limit_reserve)
     docker = DockerClient()
     scaler = PoolScaler(github, docker)
 
@@ -50,6 +51,7 @@ def main() -> None:
             log.info("    PAT: %s", "SET" if p.pat else "MISSING")
     prune_every = max(1, 900 // poll)  # ~every 15 minutes
     log.info("Poll interval: %ds  (image prune every %d ticks)", poll, prune_every)
+    log.info("GitHub API reserve: %d requests", rate_limit_reserve)
     log.info("=" * 60)
 
     tick_count = 0

@@ -3,16 +3,36 @@
 
 """GitHub API client for runner management."""
 
+import hashlib
 import json
 import logging
+import threading
+import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from rorch.config import PoolConfig
+from rorch.errors import GitHubRateLimitError
 from rorch.protocols import RunnerInfo
 
 log = logging.getLogger(__name__)
+
+MAX_CONDITIONAL_CACHE_ENTRIES = 2048
+SECONDARY_RATE_LIMIT_BASE_SECONDS = 60
+SECONDARY_RATE_LIMIT_MAX_SECONDS = 900
+MUTATION_DELAY_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class ConditionalResponse:
+    """Last successful GET response and its GitHub validator."""
+
+    etag: str
+    data: Any
 
 
 class GitHubClient:
@@ -22,23 +42,172 @@ class GitHubClient:
     API_VERSION = "2022-11-28"
     TIMEOUT = 10
 
+    def __init__(
+        self,
+        rate_limit_reserve: int = 100,
+        wall_clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._rate_limit_reserve = rate_limit_reserve
+        self._wall_clock = wall_clock
+        self._sleep = sleep
+        self._request_lock = threading.Lock()
+        self._blocked_until: dict[bytes, float] = {}
+        self._secondary_failures: dict[bytes, int] = {}
+        self._conditional_cache: OrderedDict[tuple[bytes, str], ConditionalResponse] = OrderedDict()
+        self._last_mutation_at = 0.0
+
     def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
-        url = f"{self.API_BASE}{path}"
-        req = urllib.request.Request(url, method=method)
-        req.add_header("Authorization", f"Bearer {pat}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("X-GitHub-Api-Version", self.API_VERSION)
-        try:
-            with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
-                if method == "DELETE":
-                    return resp.status == 204
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            body = e.read().decode()
-            log.error("GitHub API %s %d: %s — %s", method, e.code, path, body[:200])
+        token_key = hashlib.sha256(pat.encode()).digest()
+        cache_key = (token_key, path)
+
+        with self._request_lock:
+            now = self._wall_clock()
+            self._raise_if_blocked(token_key, now)
+            self._pace_mutation(method, now)
+
+            url = f"{self.API_BASE}{path}"
+            req = urllib.request.Request(url, method=method)
+            req.add_header("Authorization", f"Bearer {pat}")
+            req.add_header("Accept", "application/vnd.github+json")
+            req.add_header("X-GitHub-Api-Version", self.API_VERSION)
+            req.add_header("User-Agent", "rorch-runner-orchestrator")
+            cached = self._conditional_cache.get(cache_key) if method == "GET" else None
+            if cached is not None:
+                req.add_header("If-None-Match", cached.etag)
+
+            try:
+                with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
+                    self._update_rate_limit(token_key, resp.headers)
+                    self._secondary_failures.pop(token_key, None)
+                    if method == "DELETE":
+                        return resp.status == 204
+                    data = json.loads(resp.read())
+                    self._cache_conditional_response(cache_key, resp.headers.get("ETag"), data)
+                    return data
+            except urllib.error.HTTPError as error:
+                if error.code == 304 and cached is not None:
+                    self._update_rate_limit(token_key, error.headers)
+                    self._secondary_failures.pop(token_key, None)
+                    self._conditional_cache.move_to_end(cache_key)
+                    return cached.data
+
+                body = error.read().decode(errors="replace")
+                if self._is_rate_limit_error(error, body):
+                    retry_at, reason = self._rate_limit_retry(token_key, error, body)
+                    self._block_token(token_key, retry_at, reason)
+                    raise GitHubRateLimitError(retry_at, reason) from error
+
+                log.error(
+                    "GitHub API %s %d: %s — %s",
+                    method,
+                    error.code,
+                    path,
+                    body[:200],
+                )
+                return None
+            except GitHubRateLimitError:
+                raise
+            except Exception as error:
+                log.error("GitHub %s request failed: %s", method, error)
+                return None
+
+    def _raise_if_blocked(self, token_key: bytes, now: float) -> None:
+        blocked_until = self._blocked_until.get(token_key, 0.0)
+        if blocked_until <= now:
+            self._blocked_until.pop(token_key, None)
+            return
+        raise GitHubRateLimitError(blocked_until, "GitHub API cooldown is active")
+
+    def _pace_mutation(self, method: str, now: float) -> None:
+        if method not in {"POST", "PATCH", "PUT", "DELETE"}:
+            return
+        delay = MUTATION_DELAY_SECONDS - (now - self._last_mutation_at)
+        if delay > 0:
+            self._sleep(delay)
+        self._last_mutation_at = self._wall_clock()
+
+    def _update_rate_limit(self, token_key: bytes, headers: Any) -> None:
+        remaining = self._parse_int_header(headers, "X-RateLimit-Remaining")
+        reset_at = self._parse_int_header(headers, "X-RateLimit-Reset")
+        if (
+            remaining is not None
+            and remaining <= self._rate_limit_reserve
+            and reset_at is not None
+            and reset_at > self._wall_clock()
+        ):
+            retry_at = float(reset_at + 1)
+            reason = f"GitHub API reserve reached ({remaining} remaining)"
+            self._block_token(
+                token_key,
+                retry_at,
+                reason,
+            )
+            raise GitHubRateLimitError(retry_at, reason)
+
+    def _rate_limit_retry(
+        self,
+        token_key: bytes,
+        error: urllib.error.HTTPError,
+        body: str,
+    ) -> tuple[float, str]:
+        now = self._wall_clock()
+        retry_after = self._parse_int_header(error.headers, "Retry-After")
+        reset_at = self._parse_int_header(error.headers, "X-RateLimit-Reset")
+        remaining = self._parse_int_header(error.headers, "X-RateLimit-Remaining")
+
+        if retry_after is not None:
+            return now + retry_after, f"GitHub requested retry after {retry_after}s"
+        if remaining == 0 and reset_at is not None:
+            return float(reset_at + 1), f"GitHub primary rate limit exhausted: {body[:120]}"
+
+        failures = self._secondary_failures.get(token_key, 0) + 1
+        self._secondary_failures[token_key] = failures
+        delay = min(
+            SECONDARY_RATE_LIMIT_BASE_SECONDS * (2 ** (failures - 1)),
+            SECONDARY_RATE_LIMIT_MAX_SECONDS,
+        )
+        return now + delay, f"GitHub secondary rate limit; backing off {delay}s"
+
+    @staticmethod
+    def _is_rate_limit_error(error: urllib.error.HTTPError, body: str) -> bool:
+        remaining = error.headers.get("X-RateLimit-Remaining")
+        return (
+            error.code == 429
+            or remaining == "0"
+            or "rate limit" in body.lower()
+            or error.headers.get("Retry-After") is not None
+        )
+
+    def _block_token(self, token_key: bytes, retry_at: float, reason: str) -> None:
+        previous = self._blocked_until.get(token_key, 0.0)
+        self._blocked_until[token_key] = max(previous, retry_at)
+        if retry_at > previous:
+            wait_seconds = max(1, int(retry_at - self._wall_clock()))
+            log.warning("%s; pausing GitHub requests for %ds", reason, wait_seconds)
+
+    def _cache_conditional_response(
+        self,
+        cache_key: tuple[bytes, str],
+        etag: str | None,
+        data: Any,
+    ) -> None:
+        if not etag:
+            self._conditional_cache.pop(cache_key, None)
+            return
+        self._conditional_cache[cache_key] = ConditionalResponse(etag=etag, data=data)
+        self._conditional_cache.move_to_end(cache_key)
+        while len(self._conditional_cache) > MAX_CONDITIONAL_CACHE_ENTRIES:
+            self._conditional_cache.popitem(last=False)
+
+    @staticmethod
+    def _parse_int_header(headers: Any, name: str) -> int | None:
+        value = headers.get(name)
+        if value is None:
             return None
-        except Exception as e:
-            log.error("GitHub %s request failed: %s", method, e)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
             return None
 
     def _get(self, pat: str, path: str) -> Any | None:

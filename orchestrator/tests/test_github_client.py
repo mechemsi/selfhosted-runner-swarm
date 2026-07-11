@@ -3,9 +3,14 @@
 
 """Tests for GitHub API repository discovery."""
 
-from unittest.mock import MagicMock
+import io
+import urllib.error
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from rorch.config import PoolConfig
+from rorch.errors import GitHubRateLimitError
 from rorch.github_client import GitHubClient
 from rorch.protocols import RunnerInfo
 
@@ -109,3 +114,90 @@ class TestRunnerOperations:
         client._delete.assert_called_once_with(  # type: ignore[attr-defined]
             "token", "/repos/owner/project/actions/runners/42"
         )
+
+
+def _response(data: bytes, headers: dict[str, str], status: int = 200) -> MagicMock:
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = status
+    response.headers = headers
+    response.read.return_value = data
+    return response
+
+
+class TestRateLimitProtection:
+    def test_reuses_cached_body_after_conditional_304(self) -> None:
+        client = GitHubClient(rate_limit_reserve=0)
+        first = _response(b'{"value": 1}', {"ETag": '"version-1"'})
+        not_modified = urllib.error.HTTPError(
+            url="https://api.github.com/test",
+            code=304,
+            msg="Not Modified",
+            hdrs={},
+            fp=io.BytesIO(b""),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=[first, not_modified]) as urlopen:
+            first_data = client._get("token", "/test")
+            second_data = client._get("token", "/test")
+
+        assert first_data == {"value": 1}
+        assert second_data == first_data
+        second_request = urlopen.call_args_list[1].args[0]
+        assert second_request.get_header("If-none-match") == '"version-1"'
+
+    def test_stops_requests_until_primary_limit_reset(self) -> None:
+        clock = MagicMock(return_value=100.0)
+        client = GitHubClient(rate_limit_reserve=0, wall_clock=clock)
+        exhausted = urllib.error.HTTPError(
+            url="https://api.github.com/test",
+            code=403,
+            msg="Forbidden",
+            hdrs={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "200"},
+            fp=io.BytesIO(b'{"message":"API rate limit exceeded"}'),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=exhausted) as urlopen:
+            with pytest.raises(GitHubRateLimitError) as first_error:
+                client._get("token", "/test")
+            with pytest.raises(GitHubRateLimitError):
+                client._get("token", "/another-test")
+
+        assert first_error.value.retry_at_epoch == 201
+        urlopen.assert_called_once()
+
+    def test_preserves_configured_request_reserve(self) -> None:
+        clock = MagicMock(return_value=100.0)
+        client = GitHubClient(rate_limit_reserve=100, wall_clock=clock)
+        response = _response(
+            b'{"value": 1}',
+            {"X-RateLimit-Remaining": "100", "X-RateLimit-Reset": "200"},
+        )
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            with pytest.raises(GitHubRateLimitError) as reserve_error:
+                client._get("token", "/test")
+            with pytest.raises(GitHubRateLimitError):
+                client._get("token", "/another-test")
+
+        assert reserve_error.value.retry_at_epoch == 201
+        urlopen.assert_called_once()
+
+    def test_uses_retry_after_for_secondary_limit(self) -> None:
+        clock = MagicMock(return_value=100.0)
+        client = GitHubClient(rate_limit_reserve=0, wall_clock=clock)
+        limited = urllib.error.HTTPError(
+            url="https://api.github.com/test",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={"Retry-After": "90"},
+            fp=io.BytesIO(b'{"message":"slow down"}'),
+        )
+
+        with (
+            patch("urllib.request.urlopen", side_effect=limited),
+            pytest.raises(GitHubRateLimitError) as error,
+        ):
+            client._get("token", "/test")
+
+        assert error.value.retry_at_epoch == 190
