@@ -65,5 +65,6 @@ pools:
   #   owner: my-github-username
   #   scope: personal
   #   pat:   "${PERSONAL_GITHUB_PAT}"
+  #   repo_discovery_ttl: 600          # refresh repository list every 10 minutes
   #   max_runners: 10
   #   min_idle:    0

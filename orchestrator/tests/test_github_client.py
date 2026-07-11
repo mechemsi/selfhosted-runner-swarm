@@ -21,6 +21,18 @@ def _repo(name: str, owner: str = "test-user", **overrides: object) -> dict[str,
 
 
 class TestListRepositories:
+    def test_returns_none_when_discovery_request_fails(self) -> None:
+        client = GitHubClient()
+        client._get = MagicMock(return_value=None)  # type: ignore[method-assign]
+        pool = PoolConfig(
+            name="personal",
+            pat="token",
+            owner="test-user",
+            scope="personal",
+        )
+
+        assert client.list_repositories(pool) is None
+
     def test_returns_only_active_repositories_owned_by_account(self) -> None:
         client = GitHubClient()
         client._get = MagicMock(  # type: ignore[method-assign]

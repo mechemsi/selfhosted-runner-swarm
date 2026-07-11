@@ -22,6 +22,7 @@ class PoolConfig:
     owner: str
     repo: str = ""
     scope: str = "organization"
+    repo_discovery_ttl: int = 600
     max_runners: int = 3
     min_idle: int = 1
     runner_labels: str = "self-hosted,linux,x64,docker"
@@ -112,6 +113,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 owner=p["owner"],
                 repo=p.get("repo", ""),
                 scope=scope,
+                repo_discovery_ttl=int(
+                    p.get("repo_discovery_ttl", defaults.get("repo_discovery_ttl", 600))
+                ),
                 max_runners=p.get("max_runners", global_max),
                 min_idle=p.get("min_idle", 0 if scope == "personal" else global_min),
                 runner_labels=p.get("runner_labels", global_labels),
@@ -131,6 +135,7 @@ def _load_from_env() -> PoolConfig:
         owner=os.environ.get("GITHUB_OWNER", ""),
         repo=os.environ.get("GITHUB_REPO", ""),
         scope=scope,
+        repo_discovery_ttl=int(os.environ.get("REPO_DISCOVERY_TTL", "600")),
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
         min_idle=int(os.environ.get("MIN_IDLE", "0" if scope == "personal" else "1")),
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
@@ -156,6 +161,9 @@ def validate_pools(pools: list[PoolConfig]) -> None:
             ok = False
         if p.scope == "repository" and not p.repo:
             log.error("Pool '%s': repository scope requires repo", p.name)
+            ok = False
+        if p.repo_discovery_ttl < 0:
+            log.error("Pool '%s': repo_discovery_ttl cannot be negative", p.name)
             ok = False
     if not ok:
         sys.exit(1)

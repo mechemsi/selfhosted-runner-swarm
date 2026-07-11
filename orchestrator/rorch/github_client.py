@@ -46,7 +46,7 @@ class GitHubClient:
     def _delete(self, pat: str, path: str) -> bool | None:
         return self._request(pat, path, "DELETE")
 
-    def list_repositories(self, pool: PoolConfig) -> list[str]:
+    def list_repositories(self, pool: PoolConfig) -> list[str] | None:
         """List accessible, active repositories owned by a personal account."""
         repositories: set[str] = set()
         page = 1
@@ -57,7 +57,7 @@ class GitHubClient:
                 f"/user/repos?affiliation=owner&visibility=all&per_page=100&page={page}",
             )
             if not isinstance(data, list):
-                return []
+                return None
 
             for repo in data:
                 owner = repo.get("owner", {}).get("login", "")
@@ -102,9 +102,9 @@ class GitHubClient:
             return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo)
 
         if pool.is_personal_level:
+            repositories = self.list_repositories(pool) or []
             return sum(
-                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo)
-                for repo in self.list_repositories(pool)
+                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo) for repo in repositories
             )
 
         repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")

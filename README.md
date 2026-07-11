@@ -72,6 +72,7 @@ docker-compose logs -f orchestrator
 |----------|---------|-------------|
 | `GITHUB_PAT` | — | Primary GitHub PAT (required) |
 | `POLL_INTERVAL` | `15` | Seconds between queue checks |
+| `REPO_DISCOVERY_TTL` | `600` | Personal repository-list cache lifetime in seconds |
 
 Additional PATs can be defined for pools serving different accounts.
 
@@ -103,8 +104,11 @@ pools:
 | Personal all-repos | `owner` + `scope: personal` | All accessible repos owned by the personal account |
 | Repo-level | `owner` + `repo` | Single repository |
 
-Personal pools discover repositories on every poll. GitHub runners remain repository-scoped,
-but RORCH chooses the repository automatically and applies `max_runners` across the whole pool.
+Personal pools cache repository discovery for 10 minutes by default while continuing to poll
+known repositories every `POLL_INTERVAL`. Set `repo_discovery_ttl` per pool, or set it to `0`
+to disable caching. If a refresh fails, RORCH continues with the last successful list. The cache
+is in memory and starts empty after a restart. GitHub runners remain repository-scoped, but
+RORCH chooses the repository automatically and applies `max_runners` across the whole pool.
 Because an idle runner cannot serve arbitrary personal repositories, personal pools default
 `min_idle` to `0`.
 

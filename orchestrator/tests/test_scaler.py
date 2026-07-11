@@ -118,6 +118,60 @@ class TestCleanupCalled:
 
 
 class TestPersonalAccountScaling:
+    def test_reuses_repository_discovery_until_ttl_expires(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        clock = MagicMock(side_effect=[100.0, 200.0])
+        scaler = PoolScaler(mock_github, mock_docker, clock=clock)
+        mock_github.list_repositories.return_value = ["alpha"]
+        mock_github.get_queued_count.return_value = 0
+
+        scaler.tick(personal_pool)
+        scaler.tick(personal_pool)
+
+        mock_github.list_repositories.assert_called_once_with(personal_pool)
+
+    def test_refreshes_repository_discovery_after_ttl(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.repo_discovery_ttl = 600
+        clock = MagicMock(side_effect=[100.0, 701.0])
+        scaler = PoolScaler(mock_github, mock_docker, clock=clock)
+        mock_github.list_repositories.side_effect = [["alpha"], ["beta"]]
+        mock_github.get_queued_count.return_value = 0
+
+        scaler.tick(personal_pool)
+        mock_github.get_queued_count.reset_mock()
+        scaler.tick(personal_pool)
+
+        assert mock_github.list_repositories.call_count == 2
+        assert mock_github.get_queued_count.call_args.args[0].repo == "beta"
+
+    def test_uses_stale_repositories_when_refresh_fails(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.repo_discovery_ttl = 600
+        clock = MagicMock(side_effect=[100.0, 701.0])
+        scaler = PoolScaler(mock_github, mock_docker, clock=clock)
+        mock_github.list_repositories.side_effect = [["alpha"], None]
+        mock_github.get_queued_count.return_value = 0
+
+        scaler.tick(personal_pool)
+        mock_github.get_queued_count.reset_mock()
+        scaler.tick(personal_pool)
+
+        assert mock_github.list_repositories.call_count == 2
+        assert mock_github.get_queued_count.call_args.args[0].repo == "alpha"
+
     def test_allocates_global_capacity_fairly_between_repositories(
         self,
         scaler: PoolScaler,

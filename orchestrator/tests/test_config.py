@@ -132,6 +132,7 @@ class TestLoadConfig:
                 owner: account-owner
                 scope: personal
                 pat: direct-token
+                repo_discovery_ttl: 900
         """)
         config_path = pathlib.Path(str(tmp_path)) / "config.yml"
         config_path.write_text(config)
@@ -140,6 +141,7 @@ class TestLoadConfig:
 
         assert pools[0].scope == "personal"
         assert pools[0].min_idle == 0
+        assert pools[0].repo_discovery_ttl == 900
 
 
 class TestValidatePools:
@@ -175,3 +177,8 @@ class TestValidatePools:
         org_pool.scope = "repository"
         with pytest.raises(SystemExit):
             validate_pools([org_pool])
+
+    def test_negative_repo_discovery_ttl_exits(self, personal_pool: PoolConfig) -> None:
+        personal_pool.repo_discovery_ttl = -1
+        with pytest.raises(SystemExit):
+            validate_pools([personal_pool])

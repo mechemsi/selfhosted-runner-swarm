@@ -3,9 +3,12 @@
 
 """Pool scaling logic — the core orchestration loop."""
 
+import hashlib
 import logging
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from rorch.config import PoolConfig
 from rorch.protocols import ContainerManager, RunnerAPIClient
@@ -13,6 +16,15 @@ from rorch.protocols import ContainerManager, RunnerAPIClient
 log = logging.getLogger(__name__)
 
 SPAWN_STAGGER_SECONDS = 0.3
+MAX_REPOSITORY_CACHE_ENTRIES = 128
+
+
+@dataclass(frozen=True)
+class RepositoryCacheEntry:
+    """Last successful personal-account repository discovery."""
+
+    repositories: tuple[str, ...]
+    expires_at: float
 
 
 class PoolScaler:
@@ -22,9 +34,16 @@ class PoolScaler:
     not concrete implementations (Dependency Inversion Principle).
     """
 
-    def __init__(self, github: RunnerAPIClient, docker: ContainerManager) -> None:
+    def __init__(
+        self,
+        github: RunnerAPIClient,
+        docker: ContainerManager,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._github = github
         self._docker = docker
+        self._clock = clock
+        self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
 
     def tick(self, pool: PoolConfig) -> None:
         """Run one scaling cycle for a pool."""
@@ -43,7 +62,7 @@ class PoolScaler:
 
     def _tick_personal(self, pool: PoolConfig) -> None:
         """Scale repository runners under one personal-account capacity limit."""
-        repo_names = self._github.list_repositories(pool)
+        repo_names = self._get_personal_repositories(pool)
         if not repo_names:
             log.warning("[%s] No accessible repositories found for %s", pool.name, pool.owner)
             return
@@ -92,6 +111,50 @@ class PoolScaler:
             count = allocations[repo_pool.repo]
             if count:
                 self._spawn_parallel(repo_pool, count)
+
+    def _get_personal_repositories(self, pool: PoolConfig) -> list[str]:
+        """Return cached repositories, refreshing after the configured TTL."""
+        token_digest = hashlib.sha256(pool.pat.encode()).digest()
+        cache_key = (pool.name, pool.owner.lower(), token_digest)
+        cached = self._repository_cache.get(cache_key)
+        now = self._clock()
+
+        if cached is not None and now < cached.expires_at:
+            log.debug("[%s] Repository discovery cache hit", pool.name)
+            return list(cached.repositories)
+
+        repositories = self._github.list_repositories(pool)
+        if repositories is None:
+            if cached is not None:
+                log.warning("[%s] Repository refresh failed; using stale cache", pool.name)
+                return list(cached.repositories)
+            return []
+
+        if pool.repo_discovery_ttl == 0:
+            self._repository_cache.pop(cache_key, None)
+            return repositories
+
+        if (
+            cache_key not in self._repository_cache
+            and len(self._repository_cache) >= MAX_REPOSITORY_CACHE_ENTRIES
+        ):
+            oldest_key = min(
+                self._repository_cache,
+                key=lambda key: self._repository_cache[key].expires_at,
+            )
+            del self._repository_cache[oldest_key]
+
+        self._repository_cache[cache_key] = RepositoryCacheEntry(
+            repositories=tuple(repositories),
+            expires_at=now + pool.repo_discovery_ttl,
+        )
+        log.info(
+            "[%s] Discovered %d repositories (cache TTL=%ds)",
+            pool.name,
+            len(repositories),
+            pool.repo_discovery_ttl,
+        )
+        return repositories
 
     def _cleanup(self, pool: PoolConfig) -> None:
         """Remove exited containers and deregister offline runners."""
