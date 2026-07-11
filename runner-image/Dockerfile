@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV RUNNER_VERSION=2.323.0
+ENV RUNNER_VERSION=2.335.1
 
 # Toolchain versions to pre-stage for actions/setup-* (avoids download on every run)
 ARG NODE_VERSION=22.16.0
