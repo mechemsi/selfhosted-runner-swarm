@@ -23,6 +23,8 @@ class PoolConfig:
     repo: str = ""
     scope: str = "organization"
     repo_discovery_ttl: int = 600
+    repo_check_workers: int = 6
+    runner_operation_workers: int = 4
     max_runners: int = 3
     min_idle: int = 1
     runner_labels: str = "self-hosted,linux,x64,docker"
@@ -116,6 +118,15 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 repo_discovery_ttl=int(
                     p.get("repo_discovery_ttl", defaults.get("repo_discovery_ttl", 600))
                 ),
+                repo_check_workers=int(
+                    p.get("repo_check_workers", defaults.get("repo_check_workers", 6))
+                ),
+                runner_operation_workers=int(
+                    p.get(
+                        "runner_operation_workers",
+                        defaults.get("runner_operation_workers", 4),
+                    )
+                ),
                 max_runners=p.get("max_runners", global_max),
                 min_idle=p.get("min_idle", 0 if scope == "personal" else global_min),
                 runner_labels=p.get("runner_labels", global_labels),
@@ -136,6 +147,8 @@ def _load_from_env() -> PoolConfig:
         repo=os.environ.get("GITHUB_REPO", ""),
         scope=scope,
         repo_discovery_ttl=int(os.environ.get("REPO_DISCOVERY_TTL", "600")),
+        repo_check_workers=int(os.environ.get("REPO_CHECK_WORKERS", "6")),
+        runner_operation_workers=int(os.environ.get("RUNNER_OPERATION_WORKERS", "4")),
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
         min_idle=int(os.environ.get("MIN_IDLE", "0" if scope == "personal" else "1")),
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
@@ -164,6 +177,12 @@ def validate_pools(pools: list[PoolConfig]) -> None:
             ok = False
         if p.repo_discovery_ttl < 0:
             log.error("Pool '%s': repo_discovery_ttl cannot be negative", p.name)
+            ok = False
+        if not 1 <= p.repo_check_workers <= 32:
+            log.error("Pool '%s': repo_check_workers must be between 1 and 32", p.name)
+            ok = False
+        if not 1 <= p.runner_operation_workers <= 16:
+            log.error("Pool '%s': runner_operation_workers must be between 1 and 16", p.name)
             ok = False
     if not ok:
         sys.exit(1)

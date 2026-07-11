@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from rorch.config import PoolConfig
 from rorch.github_client import GitHubClient
+from rorch.protocols import RunnerInfo
 
 
 def _repo(name: str, owner: str = "test-user", **overrides: object) -> dict[str, object]:
@@ -77,3 +78,34 @@ class TestListRepositories:
         assert len(repositories) == 101
         assert "last-repo" in repositories
         assert client._get.call_count == 2  # type: ignore[attr-defined]
+
+
+class TestRunnerOperations:
+    def test_lists_typed_runner_snapshot(self) -> None:
+        client = GitHubClient()
+        client._get = MagicMock(  # type: ignore[method-assign]
+            return_value={
+                "runners": [
+                    {"id": 1, "name": "idle", "status": "online", "busy": False},
+                    {"id": 2, "name": "busy", "status": "online", "busy": True},
+                ]
+            }
+        )
+        pool = PoolConfig(name="repo", pat="token", owner="owner", repo="project")
+
+        runners = client.list_runners(pool)
+
+        assert runners == [
+            RunnerInfo(id=1, name="idle", status="online", busy=False),
+            RunnerInfo(id=2, name="busy", status="online", busy=True),
+        ]
+
+    def test_deregisters_one_runner(self) -> None:
+        client = GitHubClient()
+        client._delete = MagicMock(return_value=True)  # type: ignore[method-assign]
+        pool = PoolConfig(name="repo", pat="token", owner="owner", repo="project")
+
+        assert client.deregister_runner(pool, 42)
+        client._delete.assert_called_once_with(  # type: ignore[attr-defined]
+            "token", "/repos/owner/project/actions/runners/42"
+        )

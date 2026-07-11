@@ -133,6 +133,8 @@ class TestLoadConfig:
                 scope: personal
                 pat: direct-token
                 repo_discovery_ttl: 900
+                repo_check_workers: 8
+                runner_operation_workers: 5
         """)
         config_path = pathlib.Path(str(tmp_path)) / "config.yml"
         config_path.write_text(config)
@@ -142,6 +144,8 @@ class TestLoadConfig:
         assert pools[0].scope == "personal"
         assert pools[0].min_idle == 0
         assert pools[0].repo_discovery_ttl == 900
+        assert pools[0].repo_check_workers == 8
+        assert pools[0].runner_operation_workers == 5
 
 
 class TestValidatePools:
@@ -180,5 +184,24 @@ class TestValidatePools:
 
     def test_negative_repo_discovery_ttl_exits(self, personal_pool: PoolConfig) -> None:
         personal_pool.repo_discovery_ttl = -1
+        with pytest.raises(SystemExit):
+            validate_pools([personal_pool])
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("repo_check_workers", 0),
+            ("repo_check_workers", 33),
+            ("runner_operation_workers", 0),
+            ("runner_operation_workers", 17),
+        ],
+    )
+    def test_invalid_worker_count_exits(
+        self,
+        personal_pool: PoolConfig,
+        field: str,
+        value: int,
+    ) -> None:
+        setattr(personal_pool, field, value)
         with pytest.raises(SystemExit):
             validate_pools([personal_pool])

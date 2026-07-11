@@ -3,9 +3,11 @@
 
 """Tests for Docker client helpers."""
 
+from threading import Barrier, Lock
+
 import pytest
 
-from rorch.docker_client import _parse_running_minutes
+from rorch.docker_client import DockerClient, _parse_running_minutes
 
 
 class TestParseRunningMinutes:
@@ -33,3 +35,28 @@ class TestParseRunningMinutes:
     def test_about_prefix(self) -> None:
         # Docker sometimes outputs "About a minute"
         assert _parse_running_minutes("garbage data here") is None
+
+
+class TestBoundedCleanup:
+    def test_limits_parallel_cleanup_operations(self) -> None:
+        first_batch = Barrier(4)
+        state_lock = Lock()
+        active = 0
+        max_active = 0
+        completed: list[str] = []
+
+        def cleanup(item: str) -> None:
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            if item != "last":
+                first_batch.wait(timeout=2)
+            completed.append(item)
+            with state_lock:
+                active -= 1
+
+        DockerClient._run_parallel(cleanup, ["one", "two", "three", "four", "last"])
+
+        assert max_active == 4
+        assert sorted(completed) == ["four", "last", "one", "three", "two"]

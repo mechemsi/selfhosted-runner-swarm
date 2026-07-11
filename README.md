@@ -73,6 +73,8 @@ docker-compose logs -f orchestrator
 | `GITHUB_PAT` | — | Primary GitHub PAT (required) |
 | `POLL_INTERVAL` | `15` | Seconds between queue checks |
 | `REPO_DISCOVERY_TTL` | `600` | Personal repository-list cache lifetime in seconds |
+| `REPO_CHECK_WORKERS` | `6` | Maximum repositories inspected concurrently |
+| `RUNNER_OPERATION_WORKERS` | `4` | Maximum concurrent runner removals and provisions |
 
 Additional PATs can be defined for pools serving different accounts.
 
@@ -84,6 +86,8 @@ defaults:
   runner_labels: self-hosted,linux,x64,docker
   max_runners: 3
   min_idle: 1
+  repo_check_workers: 6
+  runner_operation_workers: 4
   memory_limit: 10g
   cpu_limit: 0          # 0 = unlimited
 
@@ -111,6 +115,13 @@ is in memory and starts empty after a restart. GitHub runners remain repository-
 RORCH chooses the repository automatically and applies `max_runners` across the whole pool.
 Because an idle runner cannot serve arbitrary personal repositories, personal pools default
 `min_idle` to `0`.
+
+Repository checks are I/O-bound and run concurrently through a bounded worker pool. Runner
+state is fetched once per repository and reused for cleanup and scaling. After all checks finish,
+RORCH makes one account-wide capacity decision, then removes stale runners and provisions new
+ones through a separate bounded worker pool. This preserves `max_runners` while avoiding serial
+waits across large personal accounts. Set `repo_check_workers` and `runner_operation_workers`
+per pool to tune concurrency; limits are 32 and 16 respectively.
 
 See [`example.config.yml`](example.config.yml) for detailed examples with comments.
 

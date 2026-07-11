@@ -3,9 +3,20 @@
 
 """Protocol interfaces for dependency inversion."""
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from rorch.config import PoolConfig
+
+
+@dataclass(frozen=True)
+class RunnerInfo:
+    """Runner state returned by GitHub for one registration."""
+
+    id: int
+    name: str
+    status: str
+    busy: bool
 
 
 class RunnerAPIClient(Protocol):
@@ -15,11 +26,9 @@ class RunnerAPIClient(Protocol):
 
     def get_queued_count(self, pool: PoolConfig) -> int: ...
 
-    def get_runner_stats(self, pool: PoolConfig) -> tuple[int, int]: ...
+    def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None: ...
 
-    def get_online_runner_names(self, pool: PoolConfig) -> set[str]: ...
-
-    def deregister_offline_runners(self, pool: PoolConfig, running_names: set[str]) -> None: ...
+    def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool: ...
 
 
 class ContainerManager(Protocol):

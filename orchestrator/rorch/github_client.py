@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from rorch.config import PoolConfig
+from rorch.protocols import RunnerInfo
 
 log = logging.getLogger(__name__)
 
@@ -116,43 +117,37 @@ class GitHubClient:
             total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"])
         return total
 
-    def get_runner_stats(self, pool: PoolConfig) -> tuple[int, int]:
-        """Return (idle, busy) counts of online runners."""
+    def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
+        """Fetch runner state once for cleanup and scaling decisions."""
         data = self._get(pool.pat, pool.api_runners_path)
-        if not data:
-            return 0, 0
-        runners = data.get("runners", [])
-        online = [r for r in runners if r.get("status") == "online"]
-        busy = sum(1 for r in online if r.get("busy") is True)
-        idle = sum(1 for r in online if r.get("busy") is False)
-        return idle, busy
+        if not isinstance(data, dict):
+            return None
 
-    def get_online_runner_names(self, pool: PoolConfig) -> set[str]:
-        """Get names of all online runners for this pool."""
-        data = self._get(pool.pat, pool.api_runners_path)
-        if not data:
-            return set()
-        return {r["name"] for r in data.get("runners", []) if r.get("status") == "online"}
+        raw_runners = data.get("runners")
+        if not isinstance(raw_runners, list):
+            return None
 
-    def deregister_offline_runners(self, pool: PoolConfig, running_names: set[str]) -> None:
-        """Remove offline runner registrations that have no running container."""
-        data = self._get(pool.pat, pool.api_runners_path)
-        if not data:
-            return
-
-        offline = [r for r in data.get("runners", []) if r.get("status") == "offline"]
-        for runner in offline:
-            name = runner.get("name", "")
-            rid = runner.get("id")
-
-            if not name.startswith(pool.container_prefix):
+        runners: list[RunnerInfo] = []
+        for runner in raw_runners:
+            if not isinstance(runner, dict):
                 continue
-            if name in running_names:
+            runner_id = runner.get("id")
+            name = runner.get("name")
+            status = runner.get("status")
+            if not isinstance(runner_id, int) or not isinstance(name, str):
                 continue
+            if not isinstance(status, str):
+                status = "unknown"
+            runners.append(
+                RunnerInfo(
+                    id=runner_id,
+                    name=name,
+                    status=status,
+                    busy=runner.get("busy") is True,
+                )
+            )
+        return runners
 
-            log.info("  🧹  Deregistering offline runner: %s (id=%s)", name, rid)
-            result = self._delete(pool.pat, f"{pool.api_runners_path}/{rid}")
-            if result is not None:
-                log.info("  ✓  Deregistered %s", name)
-            else:
-                log.warning("  ✗  Failed to deregister %s", name)
+    def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool:
+        """Delete one runner registration."""
+        return self._delete(pool.pat, f"{pool.api_runners_path}/{runner_id}") is True

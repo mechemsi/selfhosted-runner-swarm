@@ -14,6 +14,8 @@ defaults:
   runner_labels: self-hosted,linux,x64,docker
   max_runners:   3
   min_idle:      1
+  repo_check_workers: 6         # concurrent GitHub/Docker repository inspections (max 32)
+  runner_operation_workers: 4  # concurrent removals and provisions (max 16)
   memory_limit:  10g      # RAM per runner — set to (total LXC RAM - 2g) ÷ max_runners
   cpu_limit:     0       # 0 = no CPU limit (recommended) — runners use whatever is free
 
@@ -66,5 +68,7 @@ pools:
   #   scope: personal
   #   pat:   "${PERSONAL_GITHUB_PAT}"
   #   repo_discovery_ttl: 600          # refresh repository list every 10 minutes
+  #   repo_check_workers: 6            # inspect repositories concurrently
+  #   runner_operation_workers: 4      # remove/provision runners concurrently
   #   max_runners: 10
   #   min_idle:    0

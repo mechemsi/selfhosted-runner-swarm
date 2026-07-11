@@ -27,8 +27,20 @@ may serve the last known list beyond the TTL while retrying on the next poll. Th
 by pool, owner, and a digest of the PAT, is capped at 128 entries, and is intentionally cleared
 by an orchestrator restart.
 
+## Bounded parallel orchestration
+
+Personal repository inspections run through a bounded thread pool (six workers by default).
+Each inspection fetches GitHub runner state once and reuses that snapshot for online counts,
+stuck-container detection, and offline-runner cleanup. Scaling remains a centralized phase so
+the account-wide `max_runners` limit is calculated from a complete snapshot. Runner removals
+and provisions then execute together through a separate bounded pool (four workers by default).
+If any repository runner snapshot fails, the personal pool skips provisioning for that tick to
+avoid making a capacity decision from incomplete state. Tick and per-repository durations are
+included in operational logs. Docker cleanup helpers are also capped at four concurrent workers
+to prevent nested repository checks from creating an unbounded number of cleanup threads.
+
 ## Verification
 
 - Ruff: passed.
 - Pyright: passed with no errors (one environment warning for unavailable YAML source stubs).
-- Pytest: 49 tests passed.
+- Pytest: 59 tests passed.

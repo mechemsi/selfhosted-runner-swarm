@@ -3,21 +3,34 @@
 
 """Tests for the scaling logic."""
 
+from threading import Barrier
 from unittest.mock import MagicMock
 
 import pytest
 
 from rorch.config import PoolConfig
+from rorch.protocols import RunnerInfo
 from rorch.scaler import PoolScaler
+
+
+def _online_runners(idle: int = 0, busy: int = 0) -> list[RunnerInfo]:
+    runners = [
+        RunnerInfo(id=index, name=f"idle-{index}", status="online", busy=False)
+        for index in range(idle)
+    ]
+    runners.extend(
+        RunnerInfo(id=idle + index, name=f"busy-{index}", status="online", busy=True)
+        for index in range(busy)
+    )
+    return runners
 
 
 @pytest.fixture
 def mock_github() -> MagicMock:
     github = MagicMock()
     github.get_queued_count.return_value = 0
-    github.get_runner_stats.return_value = (1, 0)  # 1 idle, 0 busy
-    github.get_online_runner_names.return_value = set()
-    github.deregister_offline_runners.return_value = None
+    github.list_runners.return_value = _online_runners(idle=1)
+    github.deregister_runner.return_value = True
     return github
 
 
@@ -44,7 +57,7 @@ class TestScalingDecision:
     ) -> None:
         """With no work, should maintain min_idle runners."""
         mock_github.get_queued_count.return_value = 0
-        mock_github.get_runner_stats.return_value = (1, 0)
+        mock_github.list_runners.return_value = _online_runners(idle=1)
         mock_docker.running_containers.return_value = ["c1"]
 
         scaler.tick(pool)
@@ -57,7 +70,7 @@ class TestScalingDecision:
     ) -> None:
         """Queued jobs should trigger spawning additional runners."""
         mock_github.get_queued_count.return_value = 3
-        mock_github.get_runner_stats.return_value = (0, 1)  # 0 idle, 1 busy
+        mock_github.list_runners.return_value = _online_runners(busy=1)
         mock_docker.running_containers.return_value = ["c1"]
 
         scaler.tick(pool)
@@ -71,7 +84,7 @@ class TestScalingDecision:
         """Should never spawn beyond max_runners."""
         pool.max_runners = 2
         mock_github.get_queued_count.return_value = 10
-        mock_github.get_runner_stats.return_value = (0, 1)
+        mock_github.list_runners.return_value = _online_runners(busy=1)
         mock_docker.running_containers.return_value = ["c1"]
 
         scaler.tick(pool)
@@ -85,7 +98,7 @@ class TestScalingDecision:
         """No spawning when already at max_runners."""
         pool.max_runners = 2
         mock_github.get_queued_count.return_value = 5
-        mock_github.get_runner_stats.return_value = (0, 2)
+        mock_github.list_runners.return_value = _online_runners(busy=2)
         mock_docker.running_containers.return_value = ["c1", "c2"]
 
         scaler.tick(pool)
@@ -98,7 +111,7 @@ class TestScalingDecision:
         """min_idle should ensure spare runners even with no queued jobs."""
         pool.min_idle = 3
         mock_github.get_queued_count.return_value = 0
-        mock_github.get_runner_stats.return_value = (0, 0)
+        mock_github.list_runners.return_value = []
         mock_docker.running_containers.return_value = []
 
         scaler.tick(pool)
@@ -114,10 +127,91 @@ class TestCleanupCalled:
         """Tick should always run cleanup before scaling."""
         scaler.tick(pool)
         mock_docker.cleanup_exited.assert_called_once()
-        mock_github.deregister_offline_runners.assert_called_once()
+        mock_github.list_runners.assert_called_once_with(pool)
 
 
 class TestPersonalAccountScaling:
+    def test_checks_repositories_in_parallel(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.repo_check_workers = 2
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_github.list_runners.return_value = []
+        mock_docker.running_containers.return_value = []
+        inspection_barrier = Barrier(2)
+        inspected: list[str] = []
+
+        def queued_count(pool: PoolConfig) -> int:
+            inspection_barrier.wait(timeout=2)
+            inspected.append(pool.repo)
+            return 0
+
+        mock_github.get_queued_count.side_effect = queued_count
+
+        PoolScaler(mock_github, mock_docker).tick(personal_pool)
+
+        assert sorted(inspected) == ["alpha", "beta"]
+
+    def test_skips_scaling_when_any_runner_snapshot_fails(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_github.list_runners.side_effect = lambda pool: None if pool.repo == "alpha" else []
+        mock_docker.running_containers.return_value = []
+        mock_github.get_queued_count.return_value = 3
+
+        PoolScaler(mock_github, mock_docker).tick(personal_pool)
+
+        mock_docker.spawn_runner.assert_not_called()
+
+    def test_runs_removal_and_provisioning_in_parallel(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.runner_operation_workers = 2
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_docker.running_containers.return_value = []
+        mock_github.get_queued_count.side_effect = lambda pool: 1 if pool.repo == "beta" else 0
+        mock_github.list_runners.side_effect = lambda pool: (
+            [
+                RunnerInfo(
+                    id=7,
+                    name="gh-runner-personal-pool-alpha-old",
+                    status="offline",
+                    busy=False,
+                )
+            ]
+            if pool.repo == "alpha"
+            else []
+        )
+        operation_barrier = Barrier(2)
+        completed: list[str] = []
+
+        def deregister_runner(pool: PoolConfig, runner_id: int) -> bool:
+            operation_barrier.wait(timeout=2)
+            completed.append("deregister")
+            return True
+
+        def spawn_runner(pool: PoolConfig) -> bool:
+            operation_barrier.wait(timeout=2)
+            completed.append("spawn")
+            return True
+
+        mock_github.deregister_runner.side_effect = deregister_runner
+        mock_docker.spawn_runner.side_effect = spawn_runner
+
+        PoolScaler(mock_github, mock_docker).tick(personal_pool)
+
+        assert sorted(completed) == ["deregister", "spawn"]
+
     def test_reuses_repository_discovery_until_ttl_expires(
         self,
         mock_github: MagicMock,
@@ -188,9 +282,9 @@ class TestPersonalAccountScaling:
             "alpha": 2,
             "beta": 2,
         }[pool.repo]
-        mock_github.get_runner_stats.side_effect = lambda pool: {
-            "alpha": (0, 1),
-            "beta": (0, 0),
+        mock_github.list_runners.side_effect = lambda pool: {
+            "alpha": _online_runners(busy=1),
+            "beta": [],
         }[pool.repo]
 
         scaler.tick(personal_pool)
@@ -199,6 +293,7 @@ class TestPersonalAccountScaling:
             call.args[0].repo for call in mock_docker.spawn_runner.call_args_list
         )
         assert spawned_repos == ["alpha", "beta"]
+        assert mock_github.list_runners.call_count == 2
 
     def test_does_not_exceed_account_pool_capacity(
         self,
@@ -213,7 +308,7 @@ class TestPersonalAccountScaling:
             ["gh-runner-personal-pool-alpha-running"] if prefix.endswith("alpha") else []
         )
         mock_github.get_queued_count.side_effect = lambda pool: 3 if pool.repo == "beta" else 0
-        mock_github.get_runner_stats.return_value = (0, 0)
+        mock_github.list_runners.return_value = []
 
         scaler.tick(personal_pool)
 
@@ -229,7 +324,7 @@ class TestPersonalAccountScaling:
         mock_github.list_repositories.return_value = ["new-project"]
         mock_docker.running_containers.return_value = []
         mock_github.get_queued_count.return_value = 1
-        mock_github.get_runner_stats.return_value = (0, 0)
+        mock_github.list_runners.return_value = []
 
         scaler.tick(personal_pool)
 

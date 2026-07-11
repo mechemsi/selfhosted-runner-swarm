@@ -5,17 +5,16 @@
 
 import hashlib
 import logging
-import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from rorch.config import PoolConfig
-from rorch.protocols import ContainerManager, RunnerAPIClient
+from rorch.protocols import ContainerManager, RunnerAPIClient, RunnerInfo
 
 log = logging.getLogger(__name__)
 
-SPAWN_STAGGER_SECONDS = 0.3
 MAX_REPOSITORY_CACHE_ENTRIES = 128
 
 
@@ -27,12 +26,25 @@ class RepositoryCacheEntry:
     expires_at: float
 
 
-class PoolScaler:
-    """Manages runner scaling for a single pool.
+@dataclass(frozen=True)
+class PoolInspection:
+    """One consistent repository snapshot used for cleanup and scaling."""
 
-    Depends on abstract RunnerAPIClient and ContainerManager interfaces,
-    not concrete implementations (Dependency Inversion Principle).
-    """
+    pool: PoolConfig
+    running: int
+    queued: int
+    idle: int
+    busy: int
+    offline_runners: tuple[RunnerInfo, ...]
+    duration_seconds: float
+
+    @property
+    def online(self) -> int:
+        return self.idle + self.busy
+
+
+class PoolScaler:
+    """Manage runner scaling through bounded inspection and operation pools."""
 
     def __init__(
         self,
@@ -46,19 +58,25 @@ class PoolScaler:
         self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
 
     def tick(self, pool: PoolConfig) -> None:
-        """Run one scaling cycle for a pool."""
-        if pool.is_personal_level:
-            self._tick_personal(pool)
-            return
-
-        self._tick_single(pool)
+        """Run one complete scaling cycle for a pool."""
+        started = time.monotonic()
+        try:
+            if pool.is_personal_level:
+                self._tick_personal(pool)
+            else:
+                self._tick_single(pool)
+        finally:
+            log.info("[%s] Tick completed in %.2fs", pool.name, time.monotonic() - started)
 
     def _tick_single(self, pool: PoolConfig) -> None:
-        """Run one scaling cycle for a repository or organization pool."""
-        self._cleanup(pool)
-        stats = self._collect_stats(pool)
-        self._log_stats(pool, stats)
-        self._scale(pool, stats)
+        inspection = self._inspect_pool(pool)
+        self._log_inspection(inspection)
+        to_spawn = self._calculate_spawn_count(pool, inspection)
+        self._run_runner_operations(
+            [inspection],
+            [(pool, to_spawn)],
+            pool.runner_operation_workers,
+        )
 
     def _tick_personal(self, pool: PoolConfig) -> None:
         """Scale repository runners under one personal-account capacity limit."""
@@ -67,29 +85,29 @@ class PoolScaler:
             log.warning("[%s] No accessible repositories found for %s", pool.name, pool.owner)
             return
 
-        states: list[tuple[PoolConfig, dict[str, int], int]] = []
-        total_running = 0
+        repo_pools = [pool.for_repository(repo_name) for repo_name in repo_names]
+        inspections = self._inspect_pools_parallel(repo_pools, pool.repo_check_workers)
+        if inspections is None:
+            log.error("[%s] Repository inspection failed; skipping scaling", pool.name)
+            return
 
-        for repo_name in repo_names:
-            repo_pool = pool.for_repository(repo_name)
-            self._cleanup(repo_pool)
-            stats = self._collect_stats(repo_pool)
-            self._log_stats(repo_pool, stats)
-            desired = stats["busy"] + stats["queued"]
-            needed = max(0, desired - stats["running"])
-            states.append((repo_pool, stats, needed))
-            total_running += stats["running"]
+        for inspection in inspections:
+            self._log_inspection(inspection)
 
+        total_running = sum(inspection.running for inspection in inspections)
         capacity = max(0, pool.max_runners - total_running)
-        allocations = {repo_pool.repo: 0 for repo_pool, _, _ in states}
-        ordered = sorted(states, key=lambda state: (-state[1]["queued"], state[0].repo))
+        allocations = {inspection.pool.repo: 0 for inspection in inspections}
+        ordered = sorted(inspections, key=lambda item: (-item.queued, item.pool.repo))
 
         while capacity > 0:
             allocated_in_round = False
-            for repo_pool, _, needed in ordered:
-                if allocations[repo_pool.repo] >= needed:
+            for inspection in ordered:
+                desired = inspection.busy + inspection.queued
+                needed = max(0, desired - inspection.running)
+                repo = inspection.pool.repo
+                if allocations[repo] >= needed:
                     continue
-                allocations[repo_pool.repo] += 1
+                allocations[repo] += 1
                 capacity -= 1
                 allocated_in_round = True
                 if capacity == 0:
@@ -97,20 +115,150 @@ class PoolScaler:
             if not allocated_in_round:
                 break
 
-        total_to_spawn = sum(allocations.values())
+        spawn_allocations = [
+            (inspection.pool, allocations[inspection.pool.repo]) for inspection in ordered
+        ]
+        total_to_spawn = sum(count for _, count in spawn_allocations)
         log.info(
             "[%s] personal pool | repos=%d containers=%d/%d spawning=%d",
             pool.name,
-            len(states),
+            len(inspections),
             total_running,
             pool.max_runners,
             total_to_spawn,
         )
+        self._run_runner_operations(
+            inspections,
+            spawn_allocations,
+            pool.runner_operation_workers,
+        )
 
-        for repo_pool, _, _ in ordered:
-            count = allocations[repo_pool.repo]
-            if count:
-                self._spawn_parallel(repo_pool, count)
+    def _inspect_pools_parallel(
+        self, pools: list[PoolConfig], max_workers: int
+    ) -> list[PoolInspection] | None:
+        """Inspect independent repositories concurrently with a hard worker cap."""
+        worker_count = min(max_workers, len(pools))
+        inspections: list[PoolInspection] = []
+        failed = False
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="repo-check",
+        ) as executor:
+            futures = {executor.submit(self._inspect_pool, pool): pool for pool in pools}
+            for future in as_completed(futures):
+                repo_pool = futures[future]
+                try:
+                    inspections.append(future.result())
+                except Exception:
+                    failed = True
+                    log.error(
+                        "[%s] Repository inspection failed",
+                        repo_pool.name,
+                        exc_info=True,
+                    )
+
+        if failed:
+            return None
+        return sorted(inspections, key=lambda item: item.pool.repo)
+
+    def _inspect_pool(self, pool: PoolConfig) -> PoolInspection:
+        """Fetch Docker and GitHub state once for one pool."""
+        started = time.monotonic()
+        prefix = pool.container_prefix
+        self._docker.cleanup_exited(prefix)
+        running_names = set(self._docker.running_containers(prefix))
+
+        runners = self._github.list_runners(pool)
+        if runners is None:
+            raise RuntimeError(f"failed to list runners for {pool.display}")
+        runner_list = runners
+        online = [runner for runner in runner_list if runner.status == "online"]
+        online_names = {runner.name for runner in online}
+        idle = sum(1 for runner in online if not runner.busy)
+        busy = sum(1 for runner in online if runner.busy)
+        offline_runners = tuple(
+            runner
+            for runner in runner_list
+            if runner.status == "offline"
+            and runner.name.startswith(prefix)
+            and runner.name not in running_names
+        )
+
+        self._docker.cleanup_stuck(
+            prefix,
+            running_names & online_names,
+            timeout_minutes=3,
+        )
+        queued = self._github.get_queued_count(pool)
+
+        return PoolInspection(
+            pool=pool,
+            running=len(running_names),
+            queued=queued,
+            idle=idle,
+            busy=busy,
+            offline_runners=offline_runners,
+            duration_seconds=time.monotonic() - started,
+        )
+
+    def _run_runner_operations(
+        self,
+        inspections: list[PoolInspection],
+        spawn_allocations: list[tuple[PoolConfig, int]],
+        max_workers: int,
+    ) -> None:
+        """Run deregistration and provisioning together through one bounded pool."""
+        operation_count = sum(len(item.offline_runners) for item in inspections) + sum(
+            count for _, count in spawn_allocations
+        )
+        if operation_count == 0:
+            return
+
+        worker_count = min(max_workers, operation_count)
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="runner-op",
+        ) as executor:
+            futures: dict[Future[bool], str] = {}
+            deregistration_jobs = [
+                (inspection.pool, runner)
+                for inspection in inspections
+                for runner in inspection.offline_runners
+            ]
+            spawn_jobs = [
+                spawn_pool for spawn_pool, count in spawn_allocations for _ in range(count)
+            ]
+
+            while deregistration_jobs or spawn_jobs:
+                if deregistration_jobs:
+                    deregister_pool, runner = deregistration_jobs.pop()
+                    future = executor.submit(
+                        self._deregister_runner,
+                        deregister_pool,
+                        runner,
+                    )
+                    futures[future] = f"deregister {runner.name}"
+                if spawn_jobs:
+                    spawn_pool = spawn_jobs.pop()
+                    future = executor.submit(self._docker.spawn_runner, spawn_pool)
+                    futures[future] = f"spawn for {spawn_pool.display}"
+
+            for future in as_completed(futures):
+                operation = futures[future]
+                try:
+                    if not future.result():
+                        log.warning("Runner operation failed: %s", operation)
+                except Exception:
+                    log.error("Runner operation raised: %s", operation, exc_info=True)
+
+    def _deregister_runner(self, pool: PoolConfig, runner: RunnerInfo) -> bool:
+        log.info("  🧹  Deregistering offline runner: %s (id=%s)", runner.name, runner.id)
+        if self._github.deregister_runner(pool, runner.id):
+            log.info("  ✓  Deregistered %s", runner.name)
+            return True
+        log.warning("  ✗  Failed to deregister %s", runner.name)
+        return False
 
     def _get_personal_repositories(self, pool: PoolConfig) -> list[str]:
         """Return cached repositories, refreshing after the configured TTL."""
@@ -156,78 +304,44 @@ class PoolScaler:
         )
         return repositories
 
-    def _cleanup(self, pool: PoolConfig) -> None:
-        """Remove exited containers and deregister offline runners."""
-        prefix = pool.container_prefix
-        self._docker.cleanup_exited(prefix)
-
-        running = set(self._docker.running_containers(prefix))
-        self._github.deregister_offline_runners(pool, running)
-
-        # Kill containers that never came online
-        online_names = self._github.get_online_runner_names(pool)
-        self._docker.cleanup_stuck(prefix, running & online_names, timeout_minutes=3)
-
-    def _collect_stats(self, pool: PoolConfig) -> dict[str, int]:
-        running = self._docker.running_containers(pool.container_prefix)
-        n_queued = self._github.get_queued_count(pool)
-        n_idle, n_busy = self._github.get_runner_stats(pool)
-        return {
-            "running": len(running),
-            "queued": n_queued,
-            "idle": n_idle,
-            "busy": n_busy,
-            "online": n_idle + n_busy,
-        }
+    @staticmethod
+    def _log_inspection(inspection: PoolInspection) -> None:
+        log.info(
+            "[%s] %s | containers=%d online=%d (idle=%d busy=%d) queued=%d check=%.2fs",
+            inspection.pool.name,
+            inspection.pool.display,
+            inspection.running,
+            inspection.online,
+            inspection.idle,
+            inspection.busy,
+            inspection.queued,
+            inspection.duration_seconds,
+        )
 
     @staticmethod
-    def _log_stats(pool: PoolConfig, stats: dict[str, int]) -> None:
-        log.info(
-            "[%s] %s | containers=%d  online=%d (idle=%d busy=%d)  queued=%d",
-            pool.name,
-            pool.display,
-            stats["running"],
-            stats["online"],
-            stats["idle"],
-            stats["busy"],
-            stats["queued"],
+    def _calculate_spawn_count(pool: PoolConfig, inspection: PoolInspection) -> int:
+        desired = min(
+            pool.max_runners,
+            max(pool.min_idle, inspection.busy + inspection.queued),
         )
-
-    def _scale(self, pool: PoolConfig, stats: dict[str, int]) -> None:
-        """Decide how many runners to spawn and do it."""
-        desired = min(pool.max_runners, max(pool.min_idle, stats["busy"] + stats["queued"]))
-        to_spawn = max(0, desired - stats["running"])
-
+        to_spawn = max(0, desired - inspection.running)
         if to_spawn == 0:
             log.info(
-                "[%s] ✓ OK  online=%d  queued=%d  containers=%d/%d",
+                "[%s] ✓ OK online=%d queued=%d containers=%d/%d",
                 pool.name,
-                stats["online"],
-                stats["queued"],
-                stats["running"],
+                inspection.online,
+                inspection.queued,
+                inspection.running,
                 pool.max_runners,
             )
-            return
-
-        log.info(
-            "[%s] online=%d queued=%d containers=%d/%d → spawning %d in parallel",
-            pool.name,
-            stats["online"],
-            stats["queued"],
-            stats["running"],
-            pool.max_runners,
-            to_spawn,
-        )
-        self._spawn_parallel(pool, to_spawn)
-
-    def _spawn_parallel(self, pool: PoolConfig, count: int) -> None:
-        """Spawn multiple runners in parallel with a small stagger."""
-        threads = [
-            threading.Thread(target=self._docker.spawn_runner, args=(pool,), daemon=True)
-            for _ in range(count)
-        ]
-        for t in threads:
-            t.start()
-            time.sleep(SPAWN_STAGGER_SECONDS)
-        for t in threads:
-            t.join(timeout=60)
+        else:
+            log.info(
+                "[%s] online=%d queued=%d containers=%d/%d → provisioning %d",
+                pool.name,
+                inspection.online,
+                inspection.queued,
+                inspection.running,
+                pool.max_runners,
+                to_spawn,
+            )
+        return to_spawn

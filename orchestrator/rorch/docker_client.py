@@ -6,15 +6,17 @@
 import json
 import logging
 import subprocess
-import threading
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from typing import ClassVar
 
 from rorch.config import PoolConfig
 
 log = logging.getLogger(__name__)
+
+MAX_DOCKER_CLEANUP_WORKERS = 4
 
 
 def _parse_running_minutes(running_for: str) -> float | None:
@@ -273,9 +275,21 @@ class DockerClient:
 
     @staticmethod
     def _run_parallel(fn: Callable[[str], None], items: list[str], timeout: int = 15) -> None:
-        """Run a function on each item in parallel threads."""
-        threads = [threading.Thread(target=fn, args=(item,), daemon=True) for item in items]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=timeout)
+        """Run cleanup operations through a bounded worker pool."""
+        if not items:
+            return
+
+        executor = ThreadPoolExecutor(
+            max_workers=min(MAX_DOCKER_CLEANUP_WORKERS, len(items)),
+            thread_name_prefix="docker-cleanup",
+        )
+        futures = [executor.submit(fn, item) for item in items]
+        completed, pending = wait(futures, timeout=timeout)
+        for future in completed:
+            try:
+                future.result()
+            except Exception:
+                log.error("Docker cleanup operation failed", exc_info=True)
+        if pending:
+            log.warning("%d Docker cleanup operation(s) exceeded %ds", len(pending), timeout)
+        executor.shutdown(wait=False, cancel_futures=True)
