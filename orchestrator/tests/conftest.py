@@ -32,3 +32,16 @@ def org_pool() -> PoolConfig:
         max_runners=3,
         min_idle=2,
     )
+
+
+@pytest.fixture
+def personal_pool() -> PoolConfig:
+    """A personal-account pool covering every accessible repository."""
+    return PoolConfig(
+        name="personal-pool",
+        pat="github_pat_test_token_1234567890",
+        owner="test-user",
+        scope="personal",
+        max_runners=4,
+        min_idle=0,
+    )

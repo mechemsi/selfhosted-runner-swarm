@@ -46,6 +46,35 @@ class GitHubClient:
     def _delete(self, pat: str, path: str) -> bool | None:
         return self._request(pat, path, "DELETE")
 
+    def list_repositories(self, pool: PoolConfig) -> list[str]:
+        """List accessible, active repositories owned by a personal account."""
+        repositories: set[str] = set()
+        page = 1
+
+        while True:
+            data = self._get(
+                pool.pat,
+                "/user/repos?affiliation=owner&visibility=all"
+                f"&per_page=100&page={page}",
+            )
+            if not isinstance(data, list):
+                return []
+
+            for repo in data:
+                owner = repo.get("owner", {}).get("login", "")
+                name = repo.get("name", "")
+                if owner.lower() != pool.owner.lower() or not name:
+                    continue
+                if repo.get("archived") or repo.get("disabled"):
+                    continue
+                repositories.add(name)
+
+            if len(data) < 100:
+                break
+            page += 1
+
+        return sorted(repositories)
+
     def get_queued_jobs_for_repo(self, pat: str, owner: str, repo: str) -> int:
         """Count jobs waiting for a runner in a single repo."""
         total = 0
@@ -73,9 +102,13 @@ class GitHubClient:
         if pool.repo:
             return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo)
 
+        if pool.is_personal_level:
+            return sum(
+                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo)
+                for repo in self.list_repositories(pool)
+            )
+
         repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")
-        if not repos:
-            repos = self._get(pool.pat, f"/users/{pool.owner}/repos?per_page=100&type=owner")
         if not repos or not isinstance(repos, list):
             return 0
 

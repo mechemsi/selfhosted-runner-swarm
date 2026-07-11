@@ -28,10 +28,70 @@ class PoolScaler:
 
     def tick(self, pool: PoolConfig) -> None:
         """Run one scaling cycle for a pool."""
+        if pool.is_personal_level:
+            self._tick_personal(pool)
+            return
+
+        self._tick_single(pool)
+
+    def _tick_single(self, pool: PoolConfig) -> None:
+        """Run one scaling cycle for a repository or organization pool."""
         self._cleanup(pool)
         stats = self._collect_stats(pool)
         self._log_stats(pool, stats)
         self._scale(pool, stats)
+
+    def _tick_personal(self, pool: PoolConfig) -> None:
+        """Scale repository runners under one personal-account capacity limit."""
+        repo_names = self._github.list_repositories(pool)
+        if not repo_names:
+            log.warning("[%s] No accessible repositories found for %s", pool.name, pool.owner)
+            return
+
+        states: list[tuple[PoolConfig, dict[str, int], int]] = []
+        total_running = 0
+
+        for repo_name in repo_names:
+            repo_pool = pool.for_repository(repo_name)
+            self._cleanup(repo_pool)
+            stats = self._collect_stats(repo_pool)
+            self._log_stats(repo_pool, stats)
+            desired = stats["busy"] + stats["queued"]
+            needed = max(0, desired - stats["running"])
+            states.append((repo_pool, stats, needed))
+            total_running += stats["running"]
+
+        capacity = max(0, pool.max_runners - total_running)
+        allocations = {repo_pool.repo: 0 for repo_pool, _, _ in states}
+        ordered = sorted(states, key=lambda state: (-state[1]["queued"], state[0].repo))
+
+        while capacity > 0:
+            allocated_in_round = False
+            for repo_pool, _, needed in ordered:
+                if allocations[repo_pool.repo] >= needed:
+                    continue
+                allocations[repo_pool.repo] += 1
+                capacity -= 1
+                allocated_in_round = True
+                if capacity == 0:
+                    break
+            if not allocated_in_round:
+                break
+
+        total_to_spawn = sum(allocations.values())
+        log.info(
+            "[%s] personal pool | repos=%d containers=%d/%d spawning=%d",
+            pool.name,
+            len(states),
+            total_running,
+            pool.max_runners,
+            total_to_spawn,
+        )
+
+        for repo_pool, _, _ in ordered:
+            count = allocations[repo_pool.repo]
+            if count:
+                self._spawn_parallel(repo_pool, count)
 
     def _cleanup(self, pool: PoolConfig) -> None:
         """Remove exited containers and deregister offline runners."""

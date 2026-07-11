@@ -115,3 +115,70 @@ class TestCleanupCalled:
         scaler.tick(pool)
         mock_docker.cleanup_exited.assert_called_once()
         mock_github.deregister_offline_runners.assert_called_once()
+
+
+class TestPersonalAccountScaling:
+    def test_allocates_global_capacity_fairly_between_repositories(
+        self,
+        scaler: PoolScaler,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.max_runners = 3
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            ["gh-runner-personal-pool-alpha-running"] if prefix.endswith("alpha") else []
+        )
+        mock_github.get_queued_count.side_effect = lambda pool: {
+            "alpha": 2,
+            "beta": 2,
+        }[pool.repo]
+        mock_github.get_runner_stats.side_effect = lambda pool: {
+            "alpha": (0, 1),
+            "beta": (0, 0),
+        }[pool.repo]
+
+        scaler.tick(personal_pool)
+
+        spawned_repos = sorted(
+            call.args[0].repo for call in mock_docker.spawn_runner.call_args_list
+        )
+        assert spawned_repos == ["alpha", "beta"]
+
+    def test_does_not_exceed_account_pool_capacity(
+        self,
+        scaler: PoolScaler,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        personal_pool.max_runners = 1
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            ["gh-runner-personal-pool-alpha-running"] if prefix.endswith("alpha") else []
+        )
+        mock_github.get_queued_count.side_effect = lambda pool: 3 if pool.repo == "beta" else 0
+        mock_github.get_runner_stats.return_value = (0, 0)
+
+        scaler.tick(personal_pool)
+
+        mock_docker.spawn_runner.assert_not_called()
+
+    def test_newly_discovered_repository_uses_repository_registration_scope(
+        self,
+        scaler: PoolScaler,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        mock_github.list_repositories.return_value = ["new-project"]
+        mock_docker.running_containers.return_value = []
+        mock_github.get_queued_count.return_value = 1
+        mock_github.get_runner_stats.return_value = (0, 0)
+
+        scaler.tick(personal_pool)
+
+        spawned_pool = mock_docker.spawn_runner.call_args.args[0]
+        assert spawned_pool.repo == "new-project"
+        assert spawned_pool.api_runners_path == "/repos/test-user/new-project/actions/runners"

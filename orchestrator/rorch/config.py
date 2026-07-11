@@ -6,7 +6,7 @@
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import yaml
 
@@ -21,6 +21,7 @@ class PoolConfig:
     pat: str
     owner: str
     repo: str = ""
+    scope: str = "organization"
     max_runners: int = 3
     min_idle: int = 1
     runner_labels: str = "self-hosted,linux,x64,docker"
@@ -30,10 +31,16 @@ class PoolConfig:
 
     @property
     def is_org_level(self) -> bool:
-        return not self.repo
+        return not self.repo and not self.is_personal_level
+
+    @property
+    def is_personal_level(self) -> bool:
+        return not self.repo and self.scope == "personal"
 
     @property
     def display(self) -> str:
+        if self.is_personal_level:
+            return f"{self.owner} [personal: all repos]"
         return f"{self.owner} [org]" if self.is_org_level else f"{self.owner}/{self.repo}"
 
     @property
@@ -52,6 +59,16 @@ class PoolConfig:
         if self.repo:
             return f"https://github.com/{self.owner}/{self.repo}"
         return f"https://github.com/{self.owner}"
+
+    def for_repository(self, repo: str) -> "PoolConfig":
+        """Create a repository-scoped runtime pool derived from this pool."""
+        return replace(
+            self,
+            name=f"{self.name}-{repo}",
+            repo=repo,
+            scope="repository",
+            min_idle=0,
+        )
 
 
 def resolve_env(value: str) -> str:
@@ -87,14 +104,16 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
     pools: list[PoolConfig] = []
     for p in raw.get("pools", []):
         pat = resolve_env(p.get("pat", "")) or global_pat
+        scope = str(p.get("scope", "organization")).lower()
         pools.append(
             PoolConfig(
                 name=p["name"],
                 pat=pat,
                 owner=p["owner"],
                 repo=p.get("repo", ""),
+                scope=scope,
                 max_runners=p.get("max_runners", global_max),
-                min_idle=p.get("min_idle", global_min),
+                min_idle=p.get("min_idle", 0 if scope == "personal" else global_min),
                 runner_labels=p.get("runner_labels", global_labels),
                 runner_image=p.get("runner_image", global_image),
                 memory_limit=p.get("memory_limit", defaults.get("memory_limit", "2g")),
@@ -105,13 +124,15 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
 
 
 def _load_from_env() -> PoolConfig:
+    scope = os.environ.get("GITHUB_SCOPE", "organization").lower()
     return PoolConfig(
         name="default",
         pat=os.environ.get("GITHUB_PAT", ""),
         owner=os.environ.get("GITHUB_OWNER", ""),
         repo=os.environ.get("GITHUB_REPO", ""),
+        scope=scope,
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
-        min_idle=int(os.environ.get("MIN_IDLE", "1")),
+        min_idle=int(os.environ.get("MIN_IDLE", "0" if scope == "personal" else "1")),
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
         runner_image=os.environ.get("RUNNER_IMAGE", "gh-runner:latest"),
     )
@@ -126,6 +147,15 @@ def validate_pools(pools: list[PoolConfig]) -> None:
             ok = False
         if not p.owner:
             log.error("Pool '%s': owner is required", p.name)
+            ok = False
+        if p.scope not in {"organization", "personal", "repository"}:
+            log.error("Pool '%s': unsupported scope '%s'", p.name, p.scope)
+            ok = False
+        if p.scope == "personal" and p.repo:
+            log.error("Pool '%s': personal scope cannot also set repo", p.name)
+            ok = False
+        if p.scope == "repository" and not p.repo:
+            log.error("Pool '%s': repository scope requires repo", p.name)
             ok = False
     if not ok:
         sys.exit(1)

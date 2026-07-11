@@ -8,11 +8,17 @@ date: 2026-04-03
 
 Master index for project documentation.
 
+## PRDs
+
+- [Personal account all-repositories runner pool](prds/2026-07-11-personal-all-repositories.md) — Automatically cover repositories owned by a personal account.
+
 ## Plans
-_No plans yet. Create one before implementing a new feature._
+
+- [Implement personal account all-repositories runner pool](plans/2026-07-11-personal-all-repositories.md) — Add discovery and account-wide capacity allocation.
 
 ## Implementations
-_No implementation docs yet. Create one after completing a feature._
+
+- [Personal account all-repositories runner pool](implementations/2026-07-11-personal-all-repositories.md) — Discovery, repository-scoped scheduling, and global capacity enforcement.
 
 ## Decisions
 _No ADRs yet. Create one when choosing between approaches with trade-offs._

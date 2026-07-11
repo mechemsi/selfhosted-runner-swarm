@@ -56,12 +56,14 @@ pools:
   #   min_idle:    0                  # no warm runners for low-volume org
 
 
-  # ── Example 4: User account (not org) ────────────────────────────────────
-  # Personal accounts work too, but registration uses /users/ API.
-  # The orchestrator handles this automatically.
+  # ── Example 4: Personal account — all repositories ───────────────────────
+  # Repositories are discovered automatically. GitHub still registers each
+  # runner at repository level, while max_runners caps the whole account pool.
+  # min_idle is intentionally 0 because a warm runner belongs to one repo.
   #
   # - name:  personal
   #   owner: my-github-username
+  #   scope: personal
   #   pat:   "${PERSONAL_GITHUB_PAT}"
-  #   max_runners: 2
-  #   min_idle:    1
+  #   max_runners: 10
+  #   min_idle:    0

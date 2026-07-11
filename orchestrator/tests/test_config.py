@@ -30,13 +30,20 @@ class TestResolveEnv:
 
 
 class TestPoolConfig:
-    def test_is_org_level(self, pool: PoolConfig, org_pool: PoolConfig) -> None:
+    def test_is_org_level(
+        self, pool: PoolConfig, org_pool: PoolConfig, personal_pool: PoolConfig
+    ) -> None:
         assert not pool.is_org_level
         assert org_pool.is_org_level
+        assert not personal_pool.is_org_level
+        assert personal_pool.is_personal_level
 
     def test_display(self, pool: PoolConfig, org_pool: PoolConfig) -> None:
         assert pool.display == "test-org/test-repo"
         assert org_pool.display == "test-org [org]"
+
+    def test_personal_display(self, personal_pool: PoolConfig) -> None:
+        assert personal_pool.display == "test-user [personal: all repos]"
 
     def test_container_prefix(self, pool: PoolConfig) -> None:
         assert pool.container_prefix == "gh-runner-test-pool"
@@ -56,6 +63,15 @@ class TestPoolConfig:
 
     def test_registration_url_org(self, org_pool: PoolConfig) -> None:
         assert org_pool.registration_url == "https://github.com/test-org"
+
+    def test_for_repository(self, personal_pool: PoolConfig) -> None:
+        repo_pool = personal_pool.for_repository("project-one")
+
+        assert repo_pool.name == "personal-pool-project-one"
+        assert repo_pool.repo == "project-one"
+        assert repo_pool.scope == "repository"
+        assert repo_pool.min_idle == 0
+        assert repo_pool.max_runners == personal_pool.max_runners
 
 
 class TestLoadConfig:
@@ -91,6 +107,40 @@ class TestLoadConfig:
         assert pools[0].pat == "env-token"
         assert pools[0].owner == "env-owner"
 
+    def test_personal_env_scope_defaults_to_zero_idle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_PAT", "env-token")
+        monkeypatch.setenv("GITHUB_OWNER", "env-owner")
+        monkeypatch.setenv("GITHUB_SCOPE", "personal")
+
+        pools = load_config("/nonexistent/config.yml")
+
+        assert pools[0].is_personal_level
+        assert pools[0].min_idle == 0
+
+    def test_loads_personal_scope_with_zero_idle_default(
+        self, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import pathlib
+
+        config = textwrap.dedent("""\
+            defaults:
+              min_idle: 2
+            pools:
+              - name: personal
+                owner: account-owner
+                scope: personal
+                pat: direct-token
+        """)
+        config_path = pathlib.Path(str(tmp_path)) / "config.yml"
+        config_path.write_text(config)
+
+        pools = load_config(str(config_path))
+
+        assert pools[0].scope == "personal"
+        assert pools[0].min_idle == 0
+
 
 class TestValidatePools:
     def test_valid_pool_passes(self, pool: PoolConfig) -> None:
@@ -110,3 +160,18 @@ class TestValidatePools:
         pool.owner = ""
         with pytest.raises(SystemExit):
             validate_pools([pool])
+
+    def test_unknown_scope_exits(self, pool: PoolConfig) -> None:
+        pool.scope = "account"
+        with pytest.raises(SystemExit):
+            validate_pools([pool])
+
+    def test_personal_scope_with_repo_exits(self, pool: PoolConfig) -> None:
+        pool.scope = "personal"
+        with pytest.raises(SystemExit):
+            validate_pools([pool])
+
+    def test_repository_scope_without_repo_exits(self, org_pool: PoolConfig) -> None:
+        org_pool.scope = "repository"
+        with pytest.raises(SystemExit):
+            validate_pools([org_pool])

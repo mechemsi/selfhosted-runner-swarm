@@ -32,7 +32,10 @@ def main() -> None:
     log.info("=" * 60)
     log.info("GitHub Runner Orchestrator  —  multi-pool")
     for p in pools:
-        scope = "org-level" if p.is_org_level else "repo-level"
+        if p.is_personal_level:
+            scope = "personal all-repositories"
+        else:
+            scope = "org-level" if p.is_org_level else "repo-level"
         log.info(
             "  [%s]  %s  max=%d  min_idle=%d  (%s)",
             p.name,

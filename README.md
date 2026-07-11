@@ -11,7 +11,7 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 - **Multi-pool support** — manage runners for different orgs, repos, or accounts from a single orchestrator
 - **Auto-scaling** — spawns runners when jobs queue up, cleans up when idle
 - **Resource limits** — per-runner memory and CPU caps to protect your host
-- **Org or repo level** — serve all repos in an org, or dedicate runners to a single repo
+- **Org, personal, or repo level** — discover personal repos automatically or target a fixed scope
 - **Docker-in-Docker** — runners can spin up containers inside workflows (via host socket)
 - **Ephemeral runners** — no stale state, clean environment every run
 - **Stuck detection** — kills containers that fail to register within 3 minutes
@@ -88,7 +88,7 @@ defaults:
 
 pools:
   - name: my-org
-    owner: my-org       # GitHub org or user
+    owner: my-org
     # repo: my-repo     # omit for org-level (all repos)
     pat: "${GITHUB_PAT}"
     max_runners: 10
@@ -100,7 +100,13 @@ pools:
 | Type | Config | Serves |
 |------|--------|--------|
 | Org-level | `owner` only | All repos in the org |
+| Personal all-repos | `owner` + `scope: personal` | All accessible repos owned by the personal account |
 | Repo-level | `owner` + `repo` | Single repository |
+
+Personal pools discover repositories on every poll. GitHub runners remain repository-scoped,
+but RORCH chooses the repository automatically and applies `max_runners` across the whole pool.
+Because an idle runner cannot serve arbitrary personal repositories, personal pools default
+`min_idle` to `0`.
 
 See [`example.config.yml`](example.config.yml) for detailed examples with comments.
 
