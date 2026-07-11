@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y \
     sudo \
     libatomic1 \
     python3-pip \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI only
@@ -74,9 +73,9 @@ RUN apt-get update && apt-get install -y \
     && ln -sf python3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" \
     && rm -rf "/tmp/Python-${PYTHON_VERSION}" \
     && touch "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64.complete" \
-    && apt-get purge -y build-essential \
-    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+# build-essential (installed above to compile Python) is deliberately kept: CI
+# jobs need a C toolchain — Go's -race/cgo, node-gyp, Python C-extensions.
 
 # ── Make pre-staged Python 3.11 the default system python ───────────────────
 # Ubuntu 22.04 ships Python 3.10 which lacks datetime.UTC (3.11+).
