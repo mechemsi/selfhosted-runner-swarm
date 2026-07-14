@@ -7,7 +7,13 @@ import textwrap
 
 import pytest
 
-from rorch.config import PoolConfig, load_config, resolve_env, validate_pools
+from rorch.config import (
+    PoolConfig,
+    load_config,
+    load_max_total_runners,
+    resolve_env,
+    validate_pools,
+)
 
 
 class TestResolveEnv:
@@ -215,3 +221,31 @@ class TestValidatePools:
         personal_pool.github_poll_interval = value
         with pytest.raises(SystemExit):
             validate_pools([personal_pool])
+
+
+class TestMaxTotalRunners:
+    def test_reads_yaml_key(self, tmp_path: object) -> None:
+        import pathlib
+
+        config_path = pathlib.Path(str(tmp_path)) / "config.yml"
+        config_path.write_text("max_total_runners: 7\npools: []\n")
+        assert load_max_total_runners(str(config_path)) == 7
+
+    def test_defaults_to_unlimited(self, tmp_path: object) -> None:
+        import pathlib
+
+        config_path = pathlib.Path(str(tmp_path)) / "config.yml"
+        config_path.write_text("pools: []\n")
+        assert load_max_total_runners(str(config_path)) == 0
+
+    def test_env_fallback_without_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MAX_TOTAL_RUNNERS", "5")
+        assert load_max_total_runners("/nonexistent/config.yml") == 5
+
+    def test_negative_value_exits(self, tmp_path: object) -> None:
+        import pathlib
+
+        config_path = pathlib.Path(str(tmp_path)) / "config.yml"
+        config_path.write_text("max_total_runners: -1\npools: []\n")
+        with pytest.raises(SystemExit):
+            load_max_total_runners(str(config_path))

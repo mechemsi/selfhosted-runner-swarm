@@ -7,7 +7,7 @@ import logging
 import os
 import time
 
-from rorch.config import load_config, validate_pools
+from rorch.config import load_config, load_max_total_runners, validate_pools
 from rorch.docker_client import DockerClient
 from rorch.github_client import GitHubClient
 from rorch.scaler import PoolScaler
@@ -24,11 +24,12 @@ def main() -> None:
     poll = int(os.environ.get("POLL_INTERVAL", "15"))
     pools = load_config()
     validate_pools(pools)
+    max_total_runners = load_max_total_runners()
 
     rate_limit_reserve = max(0, int(os.environ.get("GITHUB_RATE_LIMIT_RESERVE", "100")))
     github = GitHubClient(rate_limit_reserve=rate_limit_reserve)
     docker = DockerClient()
-    scaler = PoolScaler(github, docker)
+    scaler = PoolScaler(github, docker, max_total_runners=max_total_runners)
 
     log.info("=" * 60)
     log.info("GitHub Runner Orchestrator  —  multi-pool")
@@ -52,6 +53,10 @@ def main() -> None:
     prune_every = max(1, 900 // poll)  # ~every 15 minutes
     log.info("Poll interval: %ds  (image prune every %d ticks)", poll, prune_every)
     log.info("GitHub API reserve: %d requests", rate_limit_reserve)
+    log.info(
+        "Global runner cap: %s",
+        max_total_runners if max_total_runners else "unlimited",
+    )
     log.info("=" * 60)
 
     tick_count = 0

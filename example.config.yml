@@ -9,6 +9,11 @@
 #
 # You can mix and match as many pools as you like.
 
+# Hard ceiling on running containers across ALL pools combined, regardless of
+# per-pool max_runners. Size it to what the host can actually handle.
+# 0 = unlimited.
+max_total_runners: 0
+
 defaults:
   runner_image:  gh-runner:latest
   runner_labels: self-hosted,linux,x64,docker

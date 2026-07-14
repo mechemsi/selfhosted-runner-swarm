@@ -18,6 +18,9 @@ log = logging.getLogger(__name__)
 
 MAX_REPOSITORY_CACHE_ENTRIES = 128
 
+# Matches every pool's containers: each prefix is "gh-runner-{pool-name}".
+GLOBAL_CONTAINER_PREFIX = "gh-runner"
+
 
 @dataclass(frozen=True)
 class RepositoryCacheEntry:
@@ -52,10 +55,12 @@ class PoolScaler:
         github: RunnerAPIClient,
         docker: ContainerManager,
         clock: Callable[[], float] = time.monotonic,
+        max_total_runners: int = 0,
     ) -> None:
         self._github = github
         self._docker = docker
         self._clock = clock
+        self._max_total_runners = max_total_runners
         self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
         self._next_poll_at: dict[tuple[str, str, str, bytes], float] = {}
 
@@ -91,10 +96,28 @@ class PoolScaler:
         finally:
             log.info("[%s] Tick completed in %.2fs", pool.name, time.monotonic() - started)
 
+    def _cap_to_global_limit(self, pool_name: str, to_spawn: int) -> int:
+        """Cap spawn count so total containers across all pools stay under the ceiling."""
+        if self._max_total_runners <= 0 or to_spawn <= 0:
+            return to_spawn
+        total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+        headroom = max(0, self._max_total_runners - total)
+        if to_spawn > headroom:
+            log.warning(
+                "[%s] Global runner cap %d reached (%d running); capping spawn %d → %d",
+                pool_name,
+                self._max_total_runners,
+                total,
+                to_spawn,
+                headroom,
+            )
+        return min(to_spawn, headroom)
+
     def _tick_single(self, pool: PoolConfig) -> None:
         inspection = self._inspect_pool(pool)
         self._log_inspection(inspection)
         to_spawn = self._calculate_spawn_count(pool, inspection)
+        to_spawn = self._cap_to_global_limit(pool.name, to_spawn)
         self._run_runner_operations(
             [inspection],
             [(pool, to_spawn)],
@@ -118,7 +141,9 @@ class PoolScaler:
             self._log_inspection(inspection)
 
         total_running = sum(inspection.running for inspection in inspections)
-        capacity = max(0, pool.max_runners - total_running)
+        capacity = self._cap_to_global_limit(
+            pool.name, max(0, pool.max_runners - total_running)
+        )
         allocations = {inspection.pool.repo: 0 for inspection in inspections}
         ordered = sorted(inspections, key=lambda item: (-item.queued, item.pool.repo))
 

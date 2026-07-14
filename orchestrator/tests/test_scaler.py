@@ -375,3 +375,61 @@ class TestPersonalAccountScaling:
         spawned_pool = mock_docker.spawn_runner.call_args.args[0]
         assert spawned_pool.repo == "new-project"
         assert spawned_pool.api_runners_path == "/repos/test-user/new-project/actions/runners"
+
+
+class TestGlobalRunnerCap:
+    """max_total_runners caps spawning across all pools combined."""
+
+    def test_caps_single_pool_spawn(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        """Pool wants 3 more runners but only 1 global slot remains."""
+        mock_github.get_queued_count.return_value = 3
+        mock_github.list_runners.return_value = _online_runners(busy=1)
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            ["r1", "r2", "r3"] if prefix == "gh-runner" else ["c1"]
+        )
+
+        PoolScaler(mock_github, mock_docker, max_total_runners=4).tick(pool)
+
+        # desired = min(5, max(1, 1+3)) = 4, pool has 1 → wants 3; global 3/4 → 1 slot
+        assert mock_docker.spawn_runner.call_count == 1
+
+    def test_no_spawn_when_global_cap_reached(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        mock_github.get_queued_count.return_value = 5
+        mock_github.list_runners.return_value = _online_runners(busy=1)
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            ["r1", "r2"] if prefix == "gh-runner" else ["c1"]
+        )
+
+        PoolScaler(mock_github, mock_docker, max_total_runners=2).tick(pool)
+
+        mock_docker.spawn_runner.assert_not_called()
+
+    def test_zero_cap_is_unlimited(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        mock_github.get_queued_count.return_value = 3
+        mock_github.list_runners.return_value = _online_runners(busy=1)
+        mock_docker.running_containers.return_value = ["c1"]
+
+        PoolScaler(mock_github, mock_docker).tick(pool)
+
+        assert mock_docker.spawn_runner.call_count == 3
+
+    def test_caps_personal_pool_capacity(
+        self, mock_github: MagicMock, mock_docker: MagicMock, personal_pool: PoolConfig
+    ) -> None:
+        """Personal capacity (4) shrinks to the global headroom (1)."""
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_github.list_runners.return_value = []
+        mock_github.get_queued_count.return_value = 2
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            ["r1", "r2", "r3"] if prefix == "gh-runner" else []
+        )
+
+        PoolScaler(mock_github, mock_docker, max_total_runners=4).tick(personal_pool)
+
+        assert mock_docker.spawn_runner.call_count == 1

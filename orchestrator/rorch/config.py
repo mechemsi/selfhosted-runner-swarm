@@ -94,6 +94,20 @@ def load_config(path: str = "config.yml") -> list[PoolConfig]:
     return [_load_from_env()]
 
 
+def load_max_total_runners(path: str = "config.yml") -> int:
+    """Load the global runner ceiling across all pools (0 = unlimited)."""
+    if os.path.exists(path):
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        value = int(raw.get("max_total_runners", 0))
+    else:
+        value = int(os.environ.get("MAX_TOTAL_RUNNERS", "0"))
+    if value < 0:
+        log.error("max_total_runners cannot be negative (got %d)", value)
+        sys.exit(1)
+    return value
+
+
 def _load_from_yaml(path: str) -> list[PoolConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
