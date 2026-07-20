@@ -108,6 +108,25 @@ def load_max_total_runners(path: str = "config.yml") -> int:
     return value
 
 
+def load_max_runner_lifetime(path: str = "config.yml") -> int:
+    """Load the hard wall-clock ceiling (minutes) for a runner container (0 = disabled).
+
+    Backstop that reaps leaked runners the ephemeral-exit and stuck reapers miss:
+    over-provisioned idle runners that never got a job, and jobs that hung after
+    coming online. Set above your longest expected job or it will abort real work.
+    """
+    if os.path.exists(path):
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        value = int(raw.get("max_runner_lifetime", 0))
+    else:
+        value = int(os.environ.get("MAX_RUNNER_LIFETIME", "0"))
+    if value < 0:
+        log.error("max_runner_lifetime cannot be negative (got %d)", value)
+        sys.exit(1)
+    return value
+
+
 def _load_from_yaml(path: str) -> list[PoolConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)

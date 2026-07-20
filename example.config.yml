@@ -14,6 +14,13 @@
 # 0 = unlimited.
 max_total_runners: 0
 
+# Backstop: kill any runner container older than this many minutes, whatever its
+# state. Reaps leaks the ephemeral-exit and stuck reapers miss — idle runners
+# over-provisioned during a burst that never got a job, and jobs that hung after
+# coming online. Set it ABOVE your longest expected job or it will abort real
+# work. 0 = disabled.
+max_runner_lifetime: 0
+
 defaults:
   runner_image:  gh-runner:latest
   runner_labels: self-hosted,linux,x64,docker

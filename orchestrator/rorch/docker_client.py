@@ -18,6 +18,10 @@ log = logging.getLogger(__name__)
 
 MAX_DOCKER_CLEANUP_WORKERS = 4
 
+# The orchestrator's own container shares the gh-runner- prefix, so the global
+# sweeps below would otherwise match (and the aged reaper would kill) it.
+ORCHESTRATOR_CONTAINER = "gh-runner-orchestrator"
+
 
 def _parse_running_minutes(running_for: str) -> float | None:
     """Parse Docker's human-readable running time into minutes."""
@@ -137,6 +141,62 @@ class DockerClient:
         def kill(name: str) -> None:
             self._capture(["rm", "-f", "-v", name])
             log.info("  💀  Killed %s", name)
+
+        self._run_parallel(kill, to_kill, timeout=15)
+
+    def cleanup_aged(
+        self, prefix: str, max_minutes: int, exclude: frozenset[str] = frozenset()
+    ) -> None:
+        """Kill runner containers older than max_minutes, regardless of state.
+
+        Backstop for leaks the ephemeral-exit and stuck reapers miss: idle runners
+        over-provisioned during a burst that never got a job (so they never hit the
+        --once exit), and jobs that hung after coming online.
+        # ponytail: hard wall-clock ceiling, not idle-time. Set it above your
+        # longest job or it aborts real work; per-pool ceiling if one pool needs
+        # longer. Coarser fix than true desired-vs-running scale-down, but catches
+        # every leak class with one number.
+        """
+        if max_minutes <= 0:
+            return
+        out, _ = self._capture(
+            [
+                "ps",
+                "--filter",
+                f"name=^{prefix}-",
+                "--format",
+                "{{.Names}}\t{{.RunningFor}}",
+            ]
+        )
+        if not out:
+            return
+
+        to_kill: list[str] = []
+        for line in out.split("\n"):
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            name, running_for = parts
+            if name in exclude:
+                continue
+            minutes = _parse_running_minutes(running_for)
+            if minutes is None or minutes < max_minutes:
+                continue
+            log.warning(
+                "  ⏰ Aged: %s (alive %s, exceeds %dm ceiling)", name, running_for, max_minutes
+            )
+            to_kill.append(name)
+
+        if not to_kill:
+            return
+
+        log.info("  Killing %d aged container(s) in parallel", len(to_kill))
+
+        def kill(name: str) -> None:
+            self._capture(["rm", "-f", "-v", name])
+            log.info("  💀  Killed aged %s", name)
 
         self._run_parallel(kill, to_kill, timeout=15)
 

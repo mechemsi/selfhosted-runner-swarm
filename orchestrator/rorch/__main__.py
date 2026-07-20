@@ -7,10 +7,15 @@ import logging
 import os
 import time
 
-from rorch.config import load_config, load_max_total_runners, validate_pools
-from rorch.docker_client import DockerClient
+from rorch.config import (
+    load_config,
+    load_max_runner_lifetime,
+    load_max_total_runners,
+    validate_pools,
+)
+from rorch.docker_client import ORCHESTRATOR_CONTAINER, DockerClient
 from rorch.github_client import GitHubClient
-from rorch.scaler import PoolScaler
+from rorch.scaler import GLOBAL_CONTAINER_PREFIX, PoolScaler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +30,7 @@ def main() -> None:
     pools = load_config()
     validate_pools(pools)
     max_total_runners = load_max_total_runners()
+    max_runner_lifetime = load_max_runner_lifetime()
 
     rate_limit_reserve = max(0, int(os.environ.get("GITHUB_RATE_LIMIT_RESERVE", "100")))
     github = GitHubClient(rate_limit_reserve=rate_limit_reserve)
@@ -57,6 +63,10 @@ def main() -> None:
         "Global runner cap: %s",
         max_total_runners if max_total_runners else "unlimited",
     )
+    log.info(
+        "Max runner lifetime: %s",
+        f"{max_runner_lifetime}m" if max_runner_lifetime else "disabled",
+    )
     log.info("=" * 60)
 
     tick_count = 0
@@ -66,6 +76,15 @@ def main() -> None:
                 scaler.tick(pool)
             except Exception:
                 log.error("[%s] Unhandled error", pool.name, exc_info=True)
+
+        try:
+            docker.cleanup_aged(
+                GLOBAL_CONTAINER_PREFIX,
+                max_runner_lifetime,
+                exclude=frozenset({ORCHESTRATOR_CONTAINER}),
+            )
+        except Exception:
+            log.error("Aged-runner cleanup failed", exc_info=True)
 
         tick_count += 1
         if tick_count % prune_every == 0:

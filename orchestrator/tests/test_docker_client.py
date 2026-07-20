@@ -60,3 +60,44 @@ class TestBoundedCleanup:
 
         assert max_active == 4
         assert sorted(completed) == ["four", "last", "one", "three", "two"]
+
+
+class TestCleanupAged:
+    _PS_OUTPUT = (
+        "gh-runner-orchestrator\t3 hours\n"  # excluded → keep
+        "gh-runner-tt-aaaaaaaa\t2 hours\n"  # aged → kill
+        "gh-runner-tt-bbbbbbbb\t5 minutes\n"  # fresh → keep
+        "gh-runner-tt-cccccccc\tAbout an hour\n"  # unparseable → keep (safe)
+    )
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, removed: list[str]) -> DockerClient:
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            if args[0] == "ps":
+                return self._PS_OUTPUT, 0
+            if args[0] == "rm":
+                removed.append(args[-1])
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+        return client
+
+    def test_kills_only_aged_and_not_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        removed: list[str] = []
+        client = self._client(monkeypatch, removed)
+        client.cleanup_aged("gh-runner", 60, exclude=frozenset({"gh-runner-orchestrator"}))
+        assert removed == ["gh-runner-tt-aaaaaaaa"]
+
+    def test_disabled_when_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        removed: list[str] = []
+        captured: list[str] = []
+
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            captured.append(args[0])
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+        client.cleanup_aged("gh-runner", 0)
+        assert captured == []  # no docker call at all when disabled
+        assert removed == []
