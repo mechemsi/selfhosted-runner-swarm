@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -33,6 +34,17 @@ BUILD_RETRY_SECONDS = 300
 # Applied to the runner image so `image prune -a` can't delete it while no
 # runner happens to be running (that is how it goes missing in the first place).
 KEEP_LABEL = "rorch.keep=true"
+
+# The runner user must be in the group owning the socket or `docker info` fails
+# inside the runner and it exits before registering. The GID differs per host,
+# so it is baked in at build time and stamped on the image to detect staleness.
+DOCKER_SOCKET = "/var/run/docker.sock"
+GID_LABEL = "rorch.docker_gid"
+
+
+def _host_docker_gid() -> int:
+    """GID owning the mounted Docker socket (the host's docker group)."""
+    return os.stat(DOCKER_SOCKET).st_gid
 
 
 def _parse_running_minutes(running_for: str) -> float | None:
@@ -89,6 +101,14 @@ class DockerClient:
         )
         return [n for n in out.split("\n") if n] if out else []
 
+    @staticmethod
+    def _last_logs(name: str, lines: int = 5) -> str:
+        """Both streams of a container's tail — the runner reports fatals on stderr."""
+        r = subprocess.run(
+            ["docker", "logs", "--tail", str(lines), name], capture_output=True, text=True
+        )
+        return " | ".join(x.strip() for x in (r.stdout + r.stderr).splitlines() if x.strip())
+
     def cleanup_exited(self, prefix: str) -> None:
         """Remove exited containers matching the prefix."""
         out, _ = self._capture(
@@ -100,21 +120,27 @@ class DockerClient:
                 "--filter",
                 "status=exited",
                 "--format",
-                "{{.Names}}",
+                "{{.Names}}\t{{.Status}}",
             ]
         )
         if not out:
             return
 
-        names = [n for n in out.split("\n") if n]
-        if not names:
+        rows = [line.split("\t") for line in out.split("\n") if line]
+        if not rows:
             return
 
-        def rm(name: str) -> None:
+        def rm(row: list[str]) -> None:
+            name = row[0]
+            status = row[1] if len(row) > 1 else ""
+            # A runner that died before registering is otherwise removed without
+            # a trace, and the pool just respawns it forever.
+            if status and not status.startswith("Exited (0)"):
+                log.warning("  ⚠  %s %s — %s", name, status, self._last_logs(name))
             self._capture(["rm", "-v", name])
             log.info("  🗑  rm %s", name)
 
-        self._run_parallel(rm, names, timeout=15)
+        self._run_parallel(rm, rows, timeout=15)
 
     def cleanup_stuck(self, prefix: str, online_names: set[str], timeout_minutes: int = 3) -> None:
         """Kill containers that never came online within the timeout."""
@@ -227,24 +253,41 @@ class DockerClient:
         ("nuget", "/home/runner/.nuget"),  # dotnet
     ]
 
-    def ensure_image(self, image: str) -> bool:
-        """Check the image exists locally, building it from the mounted context if not.
+    def _image_state(self, image: str, gid: int) -> str | None:
+        """None if the image is usable, else why it has to be (re)built."""
+        out, code = self._capture(
+            ["image", "inspect", "-f", f'{{{{index .Config.Labels "{GID_LABEL}"}}}}', image]
+        )
+        if code != 0:
+            return "missing"
+        if out.strip() != str(gid):
+            return f"built for docker GID {out.strip() or 'unknown'}, host socket is {gid}"
+        return None
 
-        Without this `docker run` tries to pull a locally-built image from a
-        registry it was never pushed to: every spawn fails slowly, forever.
+    def ensure_image(self, image: str) -> bool:
+        """Check the image is present and usable, building it from the mounted context if not.
+
+        Two ways a runner dies before it ever registers: the image is gone (spawn
+        tries to pull a locally-built tag from a registry it was never pushed to)
+        or it was built for the wrong docker GID (the runner can't read the
+        socket, entrypoint aborts, cleanup removes the evidence).
         # ponytail: one build context for every pool, so a pool with a custom
         # runner_image just pauses instead of building the wrong Dockerfile.
         """
         with self._build_lock:
-            if self._capture(["image", "inspect", image])[1] == 0:
+            gid = _host_docker_gid()
+            reason = self._image_state(image, gid)
+            if reason is None:
                 return True
 
             if not Path(RUNNER_BUILD_CONTEXT, "Dockerfile").exists():
                 log.error(
-                    "✗ Image %s missing and no build context at %s — spawns paused "
-                    "(build it on the host: docker build -t %s ./runner-image)",
+                    "✗ Image %s %s and no build context at %s — spawns paused (build it "
+                    "on the host: docker build --build-arg DOCKER_GID=%d -t %s ./runner-image)",
                     image,
+                    reason,
                     RUNNER_BUILD_CONTEXT,
+                    gid,
                     image,
                 )
                 return False
@@ -252,25 +295,38 @@ class DockerClient:
             retry_at = self._build_retry_at.get(image, 0.0)
             if time.monotonic() < retry_at:
                 log.error(
-                    "✗ Image %s missing, last build failed — spawns paused, retry in %.0fs",
+                    "✗ Image %s %s, last build failed — spawns paused, retry in %.0fs",
                     image,
+                    reason,
                     retry_at - time.monotonic(),
                 )
                 return False
 
             log.warning(
-                "Image %s missing — building from %s (takes a few minutes)",
+                "Image %s %s — building from %s with DOCKER_GID=%d (takes a few minutes)",
+                image,
+                reason,
+                RUNNER_BUILD_CONTEXT,
+                gid,
+            )
+            build = [
+                "build",
+                "--build-arg",
+                f"DOCKER_GID={gid}",
+                "--label",
+                f"{GID_LABEL}={gid}",
+                "-t",
                 image,
                 RUNNER_BUILD_CONTEXT,
-            )
-            if self._exec(["build", "-t", image, RUNNER_BUILD_CONTEXT]) != 0:
+            ]
+            if self._exec(build) != 0:
                 self._build_retry_at[image] = time.monotonic() + BUILD_RETRY_SECONDS
                 log.error(
                     "✗ Build of %s failed — spawns paused for %ds", image, BUILD_RETRY_SECONDS
                 )
                 return False
 
-            log.info("✓ Built %s", image)
+            log.info("✓ Built %s (docker GID %d)", image, gid)
             return True
 
     def spawn_runner(self, pool: PoolConfig) -> bool:
@@ -399,7 +455,7 @@ class DockerClient:
         self._run_parallel(rm_vol, to_remove, timeout=15)
 
     @staticmethod
-    def _run_parallel(fn: Callable[[str], None], items: list[str], timeout: int = 15) -> None:
+    def _run_parallel[T](fn: Callable[[T], None], items: list[T], timeout: int = 15) -> None:
         """Run cleanup operations through a bounded worker pool."""
         if not items:
             return

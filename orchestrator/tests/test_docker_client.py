@@ -5,9 +5,11 @@
 
 from pathlib import Path
 from threading import Barrier, Lock
+from typing import ClassVar
 
 import pytest
 
+from rorch import docker_client
 from rorch.docker_client import RUNNER_BUILD_CONTEXT, DockerClient, _parse_running_minutes
 
 
@@ -64,38 +66,60 @@ class TestBoundedCleanup:
 
 
 class TestEnsureImage:
+    HOST_GID = 991
+    EXPECTED_BUILD: ClassVar[list[str]] = [
+        "build",
+        "--build-arg",
+        f"DOCKER_GID={HOST_GID}",
+        "--label",
+        f"rorch.docker_gid={HOST_GID}",
+        "-t",
+        "gh-runner:latest",
+        RUNNER_BUILD_CONTEXT,
+    ]
+
     def _client(
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        present: bool,
+        image_gid: int | None,
         has_context: bool,
         build_code: int = 0,
     ) -> tuple[DockerClient, list[list[str]]]:
+        """image_gid: None = image absent, else the GID it was built for."""
         builds: list[list[str]] = []
         client = DockerClient()
-        monkeypatch.setattr(client, "_capture", lambda args: ("", 0 if present else 1))
+        monkeypatch.setattr(docker_client, "_host_docker_gid", lambda: self.HOST_GID)
+        monkeypatch.setattr(
+            client, "_capture", lambda args: ("", 1) if image_gid is None else (str(image_gid), 0)
+        )
         monkeypatch.setattr(client, "_exec", lambda args: builds.append(args) or build_code)
         monkeypatch.setattr(Path, "exists", lambda self: has_context)
         return client, builds
 
-    def test_present_image_is_not_rebuilt(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, builds = self._client(monkeypatch, present=True, has_context=True)
+    def test_matching_image_is_not_rebuilt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, image_gid=self.HOST_GID, has_context=True)
         assert client.ensure_image("gh-runner:latest") is True
         assert builds == []
 
     def test_missing_image_is_built(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, builds = self._client(monkeypatch, present=False, has_context=True)
+        client, builds = self._client(monkeypatch, image_gid=None, has_context=True)
         assert client.ensure_image("gh-runner:latest") is True
-        assert builds == [["build", "-t", "gh-runner:latest", RUNNER_BUILD_CONTEXT]]
+        assert builds == [self.EXPECTED_BUILD]
+
+    def test_wrong_docker_gid_is_rebuilt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Image exists but its runner user can't read this host's socket.
+        client, builds = self._client(monkeypatch, image_gid=988, has_context=True)
+        assert client.ensure_image("gh-runner:latest") is True
+        assert builds == [self.EXPECTED_BUILD]
 
     def test_pauses_without_build_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, builds = self._client(monkeypatch, present=False, has_context=False)
+        client, builds = self._client(monkeypatch, image_gid=None, has_context=False)
         assert client.ensure_image("gh-runner:latest") is False
         assert builds == []
 
     def test_failed_build_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, builds = self._client(monkeypatch, present=False, has_context=True, build_code=1)
+        client, builds = self._client(monkeypatch, image_gid=None, has_context=True, build_code=1)
         assert client.ensure_image("gh-runner:latest") is False
         assert client.ensure_image("gh-runner:latest") is False
         assert len(builds) == 1  # second call is inside the retry window

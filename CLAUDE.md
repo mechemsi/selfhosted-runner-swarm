@@ -88,7 +88,7 @@ desired = min(max_runners, max(min_idle, busy + queued))
 - Runner image must be built before starting the orchestrator
 - Docker socket must be mounted for the orchestrator to manage containers
 - GitHub PAT needs Actions (read/write) + Administration (read/write) permissions
-- Runner GID (991) must match host's docker group GID
+- Runner image must be built with `--build-arg DOCKER_GID=$(stat -c %g /var/run/docker.sock)`, else the runner can't read the socket and exits before registering (the orchestrator's auto-build does this and stamps the GID as a `rorch.docker_gid` label)
 
 ## Before committing changes to runner-image/
 

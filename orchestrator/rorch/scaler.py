@@ -141,9 +141,7 @@ class PoolScaler:
             self._log_inspection(inspection)
 
         total_running = sum(inspection.running for inspection in inspections)
-        capacity = self._cap_to_global_limit(
-            pool.name, max(0, pool.max_runners - total_running)
-        )
+        capacity = self._cap_to_global_limit(pool.name, max(0, pool.max_runners - total_running))
         allocations = {inspection.pool.repo: 0 for inspection in inspections}
         ordered = sorted(inspections, key=lambda item: (-item.queued, item.pool.repo))
 
