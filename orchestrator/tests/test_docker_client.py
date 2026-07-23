@@ -3,11 +3,12 @@
 
 """Tests for Docker client helpers."""
 
+from pathlib import Path
 from threading import Barrier, Lock
 
 import pytest
 
-from rorch.docker_client import DockerClient, _parse_running_minutes
+from rorch.docker_client import RUNNER_BUILD_CONTEXT, DockerClient, _parse_running_minutes
 
 
 class TestParseRunningMinutes:
@@ -60,6 +61,44 @@ class TestBoundedCleanup:
 
         assert max_active == 4
         assert sorted(completed) == ["four", "last", "one", "three", "two"]
+
+
+class TestEnsureImage:
+    def _client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        present: bool,
+        has_context: bool,
+        build_code: int = 0,
+    ) -> tuple[DockerClient, list[list[str]]]:
+        builds: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", lambda args: ("", 0 if present else 1))
+        monkeypatch.setattr(client, "_exec", lambda args: builds.append(args) or build_code)
+        monkeypatch.setattr(Path, "exists", lambda self: has_context)
+        return client, builds
+
+    def test_present_image_is_not_rebuilt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, present=True, has_context=True)
+        assert client.ensure_image("gh-runner:latest") is True
+        assert builds == []
+
+    def test_missing_image_is_built(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, present=False, has_context=True)
+        assert client.ensure_image("gh-runner:latest") is True
+        assert builds == [["build", "-t", "gh-runner:latest", RUNNER_BUILD_CONTEXT]]
+
+    def test_pauses_without_build_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, present=False, has_context=False)
+        assert client.ensure_image("gh-runner:latest") is False
+        assert builds == []
+
+    def test_failed_build_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, present=False, has_context=True, build_code=1)
+        assert client.ensure_image("gh-runner:latest") is False
+        assert client.ensure_image("gh-runner:latest") is False
+        assert len(builds) == 1  # second call is inside the retry window
 
 
 class TestCleanupAged:

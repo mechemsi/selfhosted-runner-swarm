@@ -6,10 +6,13 @@
 import json
 import logging
 import subprocess
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import ClassVar
 
 from rorch.config import PoolConfig
@@ -21,6 +24,15 @@ MAX_DOCKER_CLEANUP_WORKERS = 4
 # The orchestrator's own container shares the gh-runner- prefix, so the global
 # sweeps below would otherwise match (and the aged reaper would kill) it.
 ORCHESTRATOR_CONTAINER = "gh-runner-orchestrator"
+
+# runner-image/ mounted into the orchestrator by docker-compose. Present → a
+# missing runner image is rebuilt instead of hanging the pool.
+RUNNER_BUILD_CONTEXT = "/app/runner-image"
+BUILD_RETRY_SECONDS = 300
+
+# Applied to the runner image so `image prune -a` can't delete it while no
+# runner happens to be running (that is how it goes missing in the first place).
+KEEP_LABEL = "rorch.keep=true"
 
 
 def _parse_running_minutes(running_for: str) -> float | None:
@@ -46,6 +58,10 @@ def _parse_running_minutes(running_for: str) -> float | None:
 
 class DockerClient:
     """Manages runner container lifecycle via Docker CLI."""
+
+    def __init__(self) -> None:
+        self._build_lock = threading.Lock()
+        self._build_retry_at: dict[str, float] = {}
 
     @staticmethod
     def _capture(args: list[str]) -> tuple[str, int]:
@@ -211,8 +227,57 @@ class DockerClient:
         ("nuget", "/home/runner/.nuget"),  # dotnet
     ]
 
+    def ensure_image(self, image: str) -> bool:
+        """Check the image exists locally, building it from the mounted context if not.
+
+        Without this `docker run` tries to pull a locally-built image from a
+        registry it was never pushed to: every spawn fails slowly, forever.
+        # ponytail: one build context for every pool, so a pool with a custom
+        # runner_image just pauses instead of building the wrong Dockerfile.
+        """
+        with self._build_lock:
+            if self._capture(["image", "inspect", image])[1] == 0:
+                return True
+
+            if not Path(RUNNER_BUILD_CONTEXT, "Dockerfile").exists():
+                log.error(
+                    "✗ Image %s missing and no build context at %s — spawns paused "
+                    "(build it on the host: docker build -t %s ./runner-image)",
+                    image,
+                    RUNNER_BUILD_CONTEXT,
+                    image,
+                )
+                return False
+
+            retry_at = self._build_retry_at.get(image, 0.0)
+            if time.monotonic() < retry_at:
+                log.error(
+                    "✗ Image %s missing, last build failed — spawns paused, retry in %.0fs",
+                    image,
+                    retry_at - time.monotonic(),
+                )
+                return False
+
+            log.warning(
+                "Image %s missing — building from %s (takes a few minutes)",
+                image,
+                RUNNER_BUILD_CONTEXT,
+            )
+            if self._exec(["build", "-t", image, RUNNER_BUILD_CONTEXT]) != 0:
+                self._build_retry_at[image] = time.monotonic() + BUILD_RETRY_SECONDS
+                log.error(
+                    "✗ Build of %s failed — spawns paused for %ds", image, BUILD_RETRY_SECONDS
+                )
+                return False
+
+            log.info("✓ Built %s", image)
+            return True
+
     def spawn_runner(self, pool: PoolConfig) -> bool:
         """Start a new ephemeral runner container."""
+        if not self.ensure_image(pool.runner_image):
+            return False
+
         uid = uuid.uuid4().hex[:8]
         name = f"{pool.container_prefix}-{uid}"
         log.info("  ▶  Spawning %s", name)
@@ -281,7 +346,7 @@ class DockerClient:
         args = ["image", "prune"]
         if all_unused:
             args.append("-a")
-        args.extend(["-f", "--filter", f"until={until}"])
+        args.extend(["-f", "--filter", f"until={until}", "--filter", f"label!={KEEP_LABEL}"])
         out, code = self._capture(args)
         if code == 0 and out:
             log.info("🧹 Image prune: %s", out)

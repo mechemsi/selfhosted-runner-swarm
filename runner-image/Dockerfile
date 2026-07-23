@@ -1,5 +1,9 @@
 FROM ubuntu:22.04
 
+# Keeps the orchestrator's `docker image prune -a` from deleting this image
+# while no runner container references it.
+LABEL rorch.keep=true
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RUNNER_VERSION=2.335.1
 

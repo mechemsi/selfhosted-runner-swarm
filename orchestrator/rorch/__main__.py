@@ -69,6 +69,10 @@ def main() -> None:
     )
     log.info("=" * 60)
 
+    # Build ahead of demand: doing it on the first spawn stalls a queued job.
+    for image in {p.runner_image for p in pools}:
+        docker.ensure_image(image)
+
     tick_count = 0
     while True:
         for pool in pools:
