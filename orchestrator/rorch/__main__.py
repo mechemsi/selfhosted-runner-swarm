@@ -77,6 +77,7 @@ def main() -> None:
         f"{max_runner_lifetime}m" if max_runner_lifetime else "disabled",
     )
     log.info("State store: %s", "enabled" if store else "disabled (config.yml only)")
+    _warn_public_repo_pools(pools, github)
     log.info("=" * 60)
 
     if store is not None:
@@ -136,6 +137,30 @@ def main() -> None:
                     log.error("History prune failed", exc_info=True)
 
         time.sleep(poll)
+
+
+def _warn_public_repo_pools(pools: list, github: GitHubClient) -> None:
+    """Flag repo-level pools aimed at public repositories.
+
+    `include_public_repos` only filters pools that *discover* repositories. A
+    pool naming a repo explicitly bypasses it, which is exactly how a public
+    repo keeps its self-hosted runners after the discovery filter was added.
+
+    A warning rather than a refusal: this must never stop a running deployment
+    from starting.
+    """
+    public = [p for p in pools if p.repo and github.is_public_repo(p) is True]
+    if not public:
+        return
+    for pool in public:
+        log.warning(
+            "Pool '%s' targets the PUBLIC repository %s. A fork PR there picks its own "
+            "runs-on labels, so anyone who can open a PR can run code on this host — "
+            "which owns the Docker socket and every PAT in this config. Remove the pool "
+            "unless you accept that.",
+            pool.name,
+            pool.display,
+        )
 
 
 def _db_url() -> str:
