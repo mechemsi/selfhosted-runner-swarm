@@ -265,6 +265,35 @@ tag and passes it to the build, so a pinned pool never silently gets a different
 > `'using: node24' is not supported`. CI asserts this on every image build, and a weekly
 > job opens an issue when upstream moves ahead of the pinned version.
 
+### Which repositories a pool covers
+
+`scope: personal` and org-level pools discover repositories automatically. Two settings
+control what they pick up:
+
+```yaml
+- name: personal
+  owner: you
+  scope: personal
+  include_public_repos: false     # default — public repos are skipped
+  exclude_repos:                  # list form
+    - scratch
+    - legacy-*
+  # exclude_repos: scratch, legacy-*   # or comma-separated, same thing
+```
+
+> **Public repositories are skipped by default, and should stay that way.** A fork PR
+> carries its own workflow file and chooses its own `runs-on` labels, so a self-hosted
+> runner registered to a public repo lets anyone who can open a PR execute code on the
+> host — the one holding `/var/run/docker.sock` and every PAT in your config. GitHub's
+> own guidance is not to use self-hosted runners with public repositories. A
+> fork-approval policy helps but is not a boundary: it stops first-time contributors,
+> not anyone with a merged PR already.
+
+Skipped and excluded repositories are named in the startup log, so a pool that provisions
+nothing is diagnosable rather than mysterious. `exclude_repos` is editable from the
+dashboard; `include_public_repos` deliberately is not — it is a posture decision that
+belongs in `config.yml`.
+
 ### Runner networking and host port collisions
 
 Runners use the host network namespace by default. That means a job's `services:` containers

@@ -40,6 +40,26 @@ defaults:
   #   bridge           — isolates the runner, so service containers get their
   #                      own namespace. Jobs lose localhost access to the host.
   network_mode:  host
+
+  # ── Which repositories a discovery pool covers ──────────────────────────
+  # Applies to scope: personal and org-level pools, which discover repos
+  # automatically. Repo-level pools name their repo explicitly and ignore this.
+
+  # Public repositories are SKIPPED by default, and you almost certainly want
+  # that: a fork PR carries its own workflow file and picks its own `runs-on`
+  # labels, so a self-hosted runner on a public repo means anyone who can open
+  # a PR can run code on this host — which owns the Docker socket and every
+  # PAT below. Set true only if you accept that.
+  include_public_repos: false
+
+  # Never provision for these, whatever their visibility. Exact names or glob
+  # patterns, as a list…
+  # exclude_repos:
+  #   - scratch
+  #   - legacy-*
+  #   - "*-archive"
+  # …or as a comma-separated string, if you prefer:
+  # exclude_repos: scratch, legacy-*, "*-archive"
   max_runners:   3
   min_idle:      1
   github_poll_interval: 60      # minimum seconds between API scans for each pool

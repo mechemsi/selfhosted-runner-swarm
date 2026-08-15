@@ -116,7 +116,9 @@ desired = min(max_runners, max(min_idle, busy + queued))
 Docker builds **are** covered in CI now:
 
 - `docker-lint` runs `docker buildx build --check` plus hadolint on both Dockerfiles on every PR touching them.
-- `docker-build-scan` builds both images for real, gated on `lint` + `test-unit`, and asserts the runner agent is ≥ 2.327 (Node24 support). It runs on GitHub-hosted runners by default; set the repository variable `SELF_HOSTED_BUILDS=true` to move it onto this project's own runners.
+- `docker-build-scan` builds both images for real, gated on `lint` + `test-unit`, and asserts the runner agent is ≥ 2.327 (Node24 support) and that the entrypoint is executable. It is off by default (~16 min); enable with the repository variable `DOCKER_BUILD_CHECKS=true`.
+
+**CI must never run on this project's own self-hosted runners.** The repository is public, so a fork PR chooses its own `runs-on` labels — a self-hosted label would let any contributor execute code on the host holding the Docker socket and the GitHub PATs. The `repo-rules` job fails the build if a workflow asks for one. rorch must likewise not be configured with a pool for a public repository.
 
 Still verify locally before pushing — the runner image build is slow and its failures are
 easier to read on your own machine:

@@ -36,6 +36,7 @@ TUNABLE_FIELDS = frozenset(
         "repo_check_workers",
         "runner_operation_workers",
         "network_mode",
+        "exclude_repos",
     }
 )
 

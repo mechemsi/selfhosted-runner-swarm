@@ -38,6 +38,26 @@ class PoolConfig:
     # get their own namespace, at the cost of jobs no longer reaching host
     # services over localhost. Default stays "host" — the historical behaviour.
     network_mode: str = "host"
+    # Discovery pools (personal/org scope) skip public repositories by default.
+    # A fork PR on a public repo carries its own workflow file and picks its own
+    # `runs-on` labels, so registering a self-hosted runner there offers any
+    # contributor code execution on the host that owns the Docker socket.
+    # Opt in per pool only if you accept that.
+    include_public_repos: bool = False
+    # Comma-separated repository names or glob patterns a discovery pool must
+    # never provision for, e.g. "legacy-*,scratch". Applied after the public
+    # filter, so both can be used together.
+    exclude_repos: str = ""
+
+    @property
+    def excluded_repo_patterns(self) -> tuple[str, ...]:
+        return tuple(p.strip() for p in self.exclude_repos.split(",") if p.strip())
+
+    def excludes_repo(self, name: str) -> bool:
+        """Whether `name` matches any exclude pattern (glob or exact)."""
+        from fnmatch import fnmatch
+
+        return any(fnmatch(name, pattern) for pattern in self.excluded_repo_patterns)
 
     @property
     def is_org_level(self) -> bool:
@@ -79,6 +99,13 @@ class PoolConfig:
             scope="repository",
             min_idle=0,
         )
+
+
+def _as_csv(value: object) -> str:
+    """Accept either a YAML list or a comma-separated string."""
+    if isinstance(value, list):
+        return ",".join(str(v).strip() for v in value if str(v).strip())
+    return str(value or "").strip()
 
 
 def resolve_env(value: str) -> str:
@@ -179,6 +206,10 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 network_mode=str(
                     p.get("network_mode", defaults.get("network_mode", "host"))
                 ).lower(),
+                include_public_repos=bool(
+                    p.get("include_public_repos", defaults.get("include_public_repos", False))
+                ),
+                exclude_repos=_as_csv(p.get("exclude_repos", defaults.get("exclude_repos", ""))),
             )
         )
     return pools
@@ -201,6 +232,9 @@ def _load_from_env() -> PoolConfig:
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
         runner_image=os.environ.get("RUNNER_IMAGE", "gh-runner:latest"),
         network_mode=os.environ.get("RUNNER_NETWORK_MODE", "host").lower(),
+        include_public_repos=os.environ.get("INCLUDE_PUBLIC_REPOS", "").lower()
+        in {"1", "true", "yes"},
+        exclude_repos=os.environ.get("EXCLUDE_REPOS", ""),
     )
 
 

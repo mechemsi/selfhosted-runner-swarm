@@ -70,10 +70,21 @@ jobs:
   repo-rules:
     name: repo-rules
     needs: changes
-    if: needs.changes.outputs.python == 'true'
+    if: needs.changes.outputs.python == 'true' || needs.changes.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # This repository is public. A fork PR carries its own workflow file, so
+      # any self-hosted label here is an invitation to run arbitrary code on the
+      # host that owns the Docker socket. Anchored to the start of a YAML key so
+      # this check cannot match the pattern written in its own step.
+      - name: No self-hosted runners in a public repo
+        run: |
+          if grep -rnE '^[[:space:]]*runs-on:.*self-hosted' .github/workflows/; then
+            echo "::error::this repo is public — CI must run on GitHub-hosted runners"
+            exit 1
+          fi
 
       - name: No Docker Python SDK (the project uses the CLI deliberately)
         run: |
@@ -215,10 +226,15 @@ jobs:
 
   # The real builds — OFF by default.
   #
-  # On GitHub-hosted runners this takes ~16 minutes, almost all of it compiling
-  # Python from source for the runner image. Enable it by setting the repository
-  # variable SELF_HOSTED_BUILDS=true, which both switches the job on and moves it
-  # onto this project's own runners, where it is cheap.
+  # This takes ~16 minutes, almost all of it compiling Python from source for
+  # the runner image. Enable with the repository variable
+  # DOCKER_BUILD_CHECKS=true when you want that coverage on a PR.
+  #
+  # It runs on GitHub-hosted runners and MUST stay that way: this repository is
+  # public, so a fork PR carries its own workflow file and picks its own labels.
+  # Targeting this project's own runners would let a contributor execute code on
+  # the host holding the Docker socket and the GitHub PATs. The fork-approval
+  # policy is first_time_contributors — a speed bump, not a boundary.
   #
   # What this costs while disabled: the runner agent version assertion (>= 2.327
   # for Node24 actions) and the entrypoint read+execute assertion only run once
@@ -233,11 +249,11 @@ jobs:
     # would silently drop build validation from exactly the PRs it exists for.
     # !cancelled() opts out of that; !contains(...'failure') keeps the gate.
     if: >-
-      ${{ vars.SELF_HOSTED_BUILDS == 'true'
+      ${{ vars.DOCKER_BUILD_CHECKS == 'true'
           && !cancelled()
           && !contains(needs.*.result, 'failure')
           && needs.changes.outputs.docker == 'true' }}
-    runs-on: [self-hosted, linux, x64, docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
