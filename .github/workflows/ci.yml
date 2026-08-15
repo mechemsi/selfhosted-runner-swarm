@@ -210,14 +210,18 @@ jobs:
         with:
           dockerfile: runner-image/Dockerfile
 
-  # The real builds. Gated on lint+test so a broken build doesn't burn minutes
-  # on a PR that was never going to merge.
+  # The real builds — OFF by default.
   #
-  # Runs on GitHub-hosted runners by default. Set the repository variable
-  # SELF_HOSTED_BUILDS=true to move it onto this project's own runners — much
-  # faster for the runner image, which compiles Python from source. It is not
-  # the default deliberately: if the orchestrator is down, its own CI must still
-  # be able to prove the fix.
+  # On GitHub-hosted runners this takes ~16 minutes, almost all of it compiling
+  # Python from source for the runner image. Enable it by setting the repository
+  # variable SELF_HOSTED_BUILDS=true, which both switches the job on and moves it
+  # onto this project's own runners, where it is cheap.
+  #
+  # What this costs while disabled: the runner agent version assertion (>= 2.327
+  # for Node24 actions) and the entrypoint read+execute assertion only run once
+  # an image is actually built, so neither guards a PR right now. docker-lint
+  # still runs on every PR and catches Dockerfile syntax and instruction-order
+  # breakage. Turn this back on before trusting CI to catch a broken image.
   docker-build-scan:
     name: docker-build-scan
     needs: [changes, lint, test-unit, docker-lint]
@@ -226,10 +230,11 @@ jobs:
     # would silently drop build validation from exactly the PRs it exists for.
     # !cancelled() opts out of that; !contains(...'failure') keeps the gate.
     if: >-
-      ${{ !cancelled()
+      ${{ vars.SELF_HOSTED_BUILDS == 'true'
+          && !cancelled()
           && !contains(needs.*.result, 'failure')
           && needs.changes.outputs.docker == 'true' }}
-    runs-on: ${{ vars.SELF_HOSTED_BUILDS == 'true' && 'self-hosted' || 'ubuntu-latest' }}
+    runs-on: [self-hosted, linux, x64, docker]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
