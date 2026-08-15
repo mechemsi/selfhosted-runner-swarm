@@ -79,15 +79,15 @@ update: ## Rebuild at RUNNER_VERSION (default: newest) and recreate
 # ── development (all inside docker, per CLAUDE.md) ─────────────────────────
 
 test: ## Run the test suite
-	@docker run --rm -v "$(ORCHESTRATOR):/app" -w /app $(PY_IMAGE) \
+	@docker run --rm -v "$(CURDIR):/repo" -w /repo/orchestrator $(PY_IMAGE) \
 	  bash -c "pip install -q -e '.[dev]' && pytest -q --cov=rorch --cov-report=term-missing"
 
 lint: ## Ruff + pyright
-	@docker run --rm -v "$(ORCHESTRATOR):/app" -w /app $(PY_IMAGE) \
+	@docker run --rm -v "$(CURDIR):/repo" -w /repo/orchestrator $(PY_IMAGE) \
 	  bash -c "pip install -q -e '.[dev]' && ruff check rorch/ tests/ && ruff format --check rorch/ tests/ && pyright rorch/"
 
 fmt: ## Apply ruff formatting and autofixes
-	@docker run --rm -v "$(ORCHESTRATOR):/app" -w /app $(PY_IMAGE) \
+	@docker run --rm -v "$(CURDIR):/repo" -w /repo/orchestrator $(PY_IMAGE) \
 	  bash -c "pip install -q ruff && ruff check rorch/ tests/ --fix && ruff format rorch/ tests/"
 
 check: lint test ## Everything CI runs for the Python package

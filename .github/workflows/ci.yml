@@ -266,6 +266,22 @@ jobs:
             exit 1
           }
 
+      # The image can build perfectly and still be unable to start: COPY keeps
+      # the host file's mode, so a checkout with entrypoint.sh at 0600 yields an
+      # entrypoint the non-root runner user cannot read. Runners then die with
+      # "Permission denied" before registering, and the pool just respawns
+      # forever. Assert the runner user can actually execute it.
+      - name: Entrypoint is executable by the runner user
+        run: |
+          mode=$(docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+            -c 'stat -c %a /entrypoint.sh')
+          echo "entrypoint mode: $mode"
+          docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+            -c 'test -r /entrypoint.sh && test -x /entrypoint.sh' || {
+            echo "::error::/entrypoint.sh is $mode — the runner user needs read+execute"
+            exit 1
+          }
+
       # Advisory: the base image is Ubuntu 22.04 with a full CI toolchain, so a
       # clean report is unrealistic. Promote to blocking on CRITICAL-only once
       # the current findings are triaged.

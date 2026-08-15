@@ -17,7 +17,7 @@ from typing import Any
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
-from rorch.protocols import RunnerInfo
+from rorch.protocols import JobInfo, RunnerInfo
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,24 @@ class ConditionalResponse:
 
     etag: str
     data: Any
+
+
+def _job_info(job: dict[str, Any], run: dict[str, Any], repo: str) -> JobInfo:
+    """Map one GitHub jobs-API entry onto JobInfo."""
+    return JobInfo(
+        job_id=int(job.get("id", 0)),
+        repo=repo,
+        # `name` is the run's display name; workflow_name is the file's name and
+        # is the more stable label when a run sets a custom run-name.
+        workflow=str(run.get("workflow_name") or run.get("name") or ""),
+        job_name=str(job.get("name", "")),
+        runner=str(job.get("runner_name") or ""),
+        status=str(job.get("status", "")),
+        conclusion=str(job.get("conclusion") or ""),
+        url=str(job.get("html_url") or ""),
+        started_at=str(job.get("started_at") or ""),
+        completed_at=str(job.get("completed_at") or ""),
+    )
 
 
 class GitHubClient:
@@ -270,8 +288,20 @@ class GitHubClient:
 
         return sorted(repositories)
 
-    def get_queued_jobs_for_repo(self, pat: str, owner: str, repo: str) -> int:
-        """Count jobs waiting for a runner in a single repo."""
+    def get_queued_jobs_for_repo(
+        self,
+        pat: str,
+        owner: str,
+        repo: str,
+        jobs: list[JobInfo] | None = None,
+    ) -> int:
+        """Count jobs waiting for a runner in a single repo.
+
+        When `jobs` is supplied, every non-queued job seen along the way is
+        appended to it. That is what powers "which runner ran what" — this walk
+        already fetches the full job payload to count the queued ones, so
+        recording the rest costs no extra API requests.
+        """
         total = 0
         for status in ("queued", "in_progress"):
             runs_data = self._get(
@@ -290,17 +320,23 @@ class GitHubClient:
                 for job in jobs_data.get("jobs", []):
                     if job.get("status") == "queued":
                         total += 1
+                    elif jobs is not None:
+                        jobs.append(_job_info(job, run, repo))
         return total
 
-    def get_queued_count(self, pool: PoolConfig) -> int:
-        """Count all queued jobs for a pool (single repo or entire org)."""
+    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
+        """Count all queued jobs for a pool (single repo or entire org).
+
+        Pass `jobs` to also collect the running/finished jobs seen on the way.
+        """
         if pool.repo:
-            return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo)
+            return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo, jobs)
 
         if pool.is_personal_level:
             repositories = self.list_repositories(pool) or []
             return sum(
-                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo) for repo in repositories
+                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo, jobs)
+                for repo in repositories
             )
 
         repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")
@@ -309,7 +345,7 @@ class GitHubClient:
 
         total = 0
         for repo in repos:
-            total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"])
+            total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"], jobs)
         return total
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:

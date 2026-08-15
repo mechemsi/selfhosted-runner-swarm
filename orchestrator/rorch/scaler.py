@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
-from rorch.protocols import ContainerManager, RunnerAPIClient, RunnerInfo
+from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
 from rorch.store import EVENT_DEREGISTER, PoolState, SqliteStore
 
 log = logging.getLogger(__name__)
@@ -275,7 +275,12 @@ class PoolScaler:
             running_names & online_names,
             timeout_minutes=3,
         )
-        queued = self._github.get_queued_count(pool)
+        # The queue scan already fetches every job of every active run, so
+        # collecting them here is free and answers "what did this runner run".
+        jobs: list[JobInfo] | None = [] if self._store is not None else None
+        queued = self._github.get_queued_count(pool, jobs)
+        if jobs is not None:
+            self._record_jobs(pool, jobs)
 
         return PoolInspection(
             pool=pool,
@@ -399,6 +404,57 @@ class PoolScaler:
             pool.repo.lower(),
             hashlib.sha256(pool.pat.encode()).digest(),
         )
+
+    def _record_jobs(self, pool: PoolConfig, jobs: list[JobInfo]) -> None:
+        """Persist what ran, and log one line per job start and finish.
+
+        Without this the logs only ever said how many runners exist — never
+        which workflow a runner picked up, or how it ended.
+        """
+        if self._store is None:
+            return
+        try:
+            started, finished = self._store.sync_jobs(
+                pool.name,
+                [
+                    (
+                        job.job_id,
+                        job.repo,
+                        job.workflow,
+                        job.job_name,
+                        job.runner,
+                        job.status,
+                        job.conclusion,
+                        job.url,
+                        job.started_at,
+                    )
+                    for job in jobs
+                ],
+            )
+        except Exception:
+            log.debug("Could not record jobs for %s", pool.name, exc_info=True)
+            return
+
+        for job in started:
+            log.info(
+                "  ▶  %s picked up %s · %s / %s",
+                job["runner"] or "(unassigned)",
+                job["repo"],
+                job["workflow"],
+                job["job_name"],
+            )
+        for job in finished:
+            conclusion = job.get("conclusion") or "unknown"
+            mark = "✓" if conclusion == "success" else "✗" if conclusion == "failure" else "•"
+            log.info(
+                "  %s  %s · %s / %s finished on %s (%s)",
+                mark,
+                job["repo"],
+                job["workflow"],
+                job["job_name"],
+                job["runner"] or "(unassigned)",
+                conclusion,
+            )
 
     def _record_runner_status(
         self, pool: PoolConfig, runners: list[RunnerInfo], prefix: str

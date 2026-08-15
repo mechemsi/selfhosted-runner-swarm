@@ -12,7 +12,7 @@ import pytest
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
-from rorch.protocols import RunnerInfo
+from rorch.protocols import JobInfo, RunnerInfo
 from rorch.scaler import PoolScaler
 from rorch.store import EVENT_DEREGISTER, PoolState, SqliteStore
 
@@ -187,7 +187,7 @@ class TestPersonalAccountScaling:
         inspection_barrier = Barrier(2)
         inspected: list[str] = []
 
-        def queued_count(pool: PoolConfig) -> int:
+        def queued_count(pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
             inspection_barrier.wait(timeout=2)
             inspected.append(pool.repo)
             return 0
@@ -222,7 +222,9 @@ class TestPersonalAccountScaling:
         personal_pool.runner_operation_workers = 2
         mock_github.list_repositories.return_value = ["alpha", "beta"]
         mock_docker.running_containers.return_value = []
-        mock_github.get_queued_count.side_effect = lambda pool: 1 if pool.repo == "beta" else 0
+        mock_github.get_queued_count.side_effect = lambda pool, jobs=None: (
+            1 if pool.repo == "beta" else 0
+        )
         mock_github.list_runners.side_effect = lambda pool: (
             [
                 RunnerInfo(
@@ -324,7 +326,7 @@ class TestPersonalAccountScaling:
         mock_docker.running_containers.side_effect = lambda prefix: (
             ["gh-runner-personal-pool-alpha-running"] if prefix.endswith("alpha") else []
         )
-        mock_github.get_queued_count.side_effect = lambda pool: {
+        mock_github.get_queued_count.side_effect = lambda pool, jobs=None: {
             "alpha": 2,
             "beta": 2,
         }[pool.repo]
@@ -353,7 +355,9 @@ class TestPersonalAccountScaling:
         mock_docker.running_containers.side_effect = lambda prefix: (
             ["gh-runner-personal-pool-alpha-running"] if prefix.endswith("alpha") else []
         )
-        mock_github.get_queued_count.side_effect = lambda pool: 3 if pool.repo == "beta" else 0
+        mock_github.get_queued_count.side_effect = lambda pool, jobs=None: (
+            3 if pool.repo == "beta" else 0
+        )
         mock_github.list_runners.return_value = []
 
         scaler.tick(personal_pool)

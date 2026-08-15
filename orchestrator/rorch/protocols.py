@@ -19,12 +19,28 @@ class RunnerInfo:
     busy: bool
 
 
+@dataclass(frozen=True)
+class JobInfo:
+    """One Actions job as GitHub reports it, with the runner that took it."""
+
+    job_id: int
+    repo: str
+    workflow: str
+    job_name: str
+    runner: str
+    status: str
+    conclusion: str
+    url: str
+    started_at: str
+    completed_at: str
+
+
 class RunnerAPIClient(Protocol):
     """Interface for GitHub Actions runner API operations."""
 
     def list_repositories(self, pool: PoolConfig) -> list[str] | None: ...
 
-    def get_queued_count(self, pool: PoolConfig) -> int: ...
+    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int: ...
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None: ...
 

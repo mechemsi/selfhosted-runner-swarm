@@ -150,3 +150,65 @@ class TestAudit:
         store.audit("bob", "pool_state", "pool-a", "paused=True")
         rows = store.recent_audit()
         assert [row["actor"] for row in rows] == ["bob", "alice"]
+
+
+class TestJobs:
+    _JOB = (101, "widgets", "CI", "build", "gh-runner-a-1", "in_progress", "", "http://j/101", "")
+
+    def test_new_job_is_reported_as_started(self, store: SqliteStore) -> None:
+        started, finished = store.sync_jobs("a", [self._JOB])
+
+        assert [j["job_id"] for j in started] == [101]
+        assert finished == []
+
+    def test_same_job_is_not_reported_twice(self, store: SqliteStore) -> None:
+        store.sync_jobs("a", [self._JOB])
+        started, finished = store.sync_jobs("a", [self._JOB])
+
+        assert started == []
+        assert finished == []
+
+    def test_completion_is_reported_once(self, store: SqliteStore) -> None:
+        store.sync_jobs("a", [self._JOB])
+        done = (*self._JOB[:5], "completed", "success", self._JOB[7], "")
+
+        _, finished = store.sync_jobs("a", [done])
+        assert [j["conclusion"] for j in finished] == ["success"]
+
+        # A later scan still listing it must not re-announce the finish.
+        assert store.sync_jobs("a", [done]) == ([], [])
+
+    def test_vanished_job_is_closed_out(self, store: SqliteStore) -> None:
+        """A run leaving the queued/in_progress window stops being reported."""
+        store.sync_jobs("a", [self._JOB])
+
+        started, finished = store.sync_jobs("a", [])
+
+        assert started == []
+        assert [j["conclusion"] for j in finished] == ["unobserved"]
+        assert store.jobs_by_runner() == {}
+
+    def test_running_job_is_attributed_to_its_runner(self, store: SqliteStore) -> None:
+        store.sync_jobs("a", [self._JOB])
+        current = store.jobs_by_runner()
+
+        assert current["gh-runner-a-1"]["repo"] == "widgets"
+        assert current["gh-runner-a-1"]["job_name"] == "build"
+
+    def test_other_pools_are_untouched(self, store: SqliteStore) -> None:
+        """Syncing one pool must not close out another pool's running jobs."""
+        store.sync_jobs("a", [self._JOB])
+        other = (202, "gadgets", "CI", "test", "gh-runner-b-1", "in_progress", "", "", "")
+        store.sync_jobs("b", [other])
+
+        store.sync_jobs("a", [])
+
+        assert set(store.jobs_by_runner()) == {"gh-runner-b-1"}
+
+    def test_recent_jobs_newest_first(self, store: SqliteStore) -> None:
+        store.sync_jobs("a", [self._JOB])
+        store.sync_jobs(
+            "a", [self._JOB, (102, "widgets", "CI", "lint", "r2", "in_progress", "", "", "")]
+        )
+
+        assert {j["job_id"] for j in store.recent_jobs()} == {101, 102}

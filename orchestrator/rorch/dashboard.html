@@ -81,6 +81,16 @@
   </section>
 
   <section>
+    <h2>Jobs <span class="muted">— what runners actually ran</span></h2>
+    <div class="wrap"><table id="jobs">
+      <thead><tr>
+        <th>when</th><th>repo</th><th>workflow / job</th><th>runner</th><th>result</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
     <h2>History <span class="muted" id="hours-label"></span></h2>
     <div class="charts" id="charts"></div>
   </section>
@@ -179,6 +189,27 @@ function renderPools(pools) {
       `<button data-act="reset" data-pool="${c.name}">reset</button>`;
     tr.append(actions);
     body.append(tr);
+
+    // A personal pool scales one derived pool per repository; show the ones
+    // doing something rather than the whole quiet account.
+    for (const r of p.repos || []) {
+      const sub = document.createElement('tr');
+      sub.append(
+        cell(''), cell(`<span class="muted">↳ ${r.name.replace(c.name + '-', '')}</span>`),
+        cell(''), cell(r.containers), cell(r.online), cell(r.idle), cell(r.busy),
+        cell(r.queued > 0 ? `<span class="warn">${r.queued}</span>` : r.queued),
+        cell(''), cell(''), cell(''), cell(''),
+      );
+      body.append(sub);
+    }
+    if (p.repo_count) {
+      const note = document.createElement('tr');
+      const td = cell(`<span class="muted">${p.repo_count} repositories tracked` +
+        `${(p.repos || []).length ? `, ${p.repos.length} active` : ', all quiet'}</span>`);
+      td.colSpan = 12;
+      note.append(td);
+      body.append(note);
+    }
   }
 }
 
@@ -194,8 +225,11 @@ function renderContainers(containers) {
       ? (c.github.busy ? '<span class="warn">busy</span>' : '<span class="ok">idle</span>')
       : '<span class="muted">unknown</span>';
     const tr = document.createElement('tr');
+    const job = c.job
+      ? `<br><span class="muted">${c.job.repo} · ${c.job.workflow} / ${c.job.job_name}</span>`
+      : '';
     tr.append(
-      cell(`${c.name}${c.protected ? ' <span class="pill">kept</span>' : ''}`),
+      cell(`${c.name}${c.protected ? ' <span class="pill">kept</span>' : ''}${job}`),
       cell(`<span class="muted">${c.image}</span>`), cell(c.running_for),
       cell(`<span class="muted">${c.status}</span>`), cell(gh),
     );
@@ -208,6 +242,31 @@ function renderContainers(containers) {
       `<button data-cact="restart" data-name="${c.name}">restart</button>` +
       `<button class="bad" data-cact="stop" data-name="${c.name}">stop</button>`;
     tr.append(actions);
+    body.append(tr);
+  }
+}
+
+function renderJobs(jobs) {
+  const body = $('#jobs tbody');
+  body.innerHTML = '';
+  if (!jobs || !jobs.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">no jobs seen yet</td></tr>';
+    return;
+  }
+  for (const j of jobs) {
+    const running = !j.ended_ts;
+    const result = running ? '<span class="warn">running</span>'
+      : j.conclusion === 'success' ? '<span class="ok">success</span>'
+      : j.conclusion === 'failure' ? '<span class="bad">failure</span>'
+      : `<span class="muted">${j.conclusion || 'unknown'}</span>`;
+    const took = j.ended_ts ? ` <span class="muted">${Math.max(1, Math.round(j.ended_ts - j.ts))}s</span>` : '';
+    const label = `${j.workflow || '—'} / <strong>${j.job_name || '—'}</strong>`;
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(`<span class="muted">${ago(j.ts)}</span>`), cell(j.repo || '—'),
+      cell(j.url ? `<a href="${j.url}" target="_blank" rel="noopener">${label}</a>` : label),
+      cell(`<span class="muted">${j.runner || '—'}</span>`), cell(result + took),
+    );
     body.append(tr);
   }
 }
@@ -270,6 +329,7 @@ async function refresh() {
     renderGlobals(state.globals, state.rate_limit);
     renderPools(state.pools);
     renderContainers(state.containers);
+    renderJobs(state.jobs);
     renderEvents(state.events);
     $('#stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (err) {

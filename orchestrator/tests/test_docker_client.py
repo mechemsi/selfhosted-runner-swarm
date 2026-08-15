@@ -12,7 +12,12 @@ import pytest
 
 from rorch import docker_client
 from rorch.config import PoolConfig
-from rorch.docker_client import RUNNER_BUILD_CONTEXT, DockerClient, _parse_running_minutes
+from rorch.docker_client import (
+    RUNNER_BUILD_CONTEXT,
+    DockerClient,
+    _parse_running_minutes,
+    _pinned_runner_version,
+)
 from rorch.store import EVENT_MANUAL_STOP, SqliteStore
 
 
@@ -257,3 +262,43 @@ class TestNetworkMode:
 
         args = recorded[0]
         assert args[args.index("--network") + 1] == "host"
+
+
+class TestPinnedRunnerVersion:
+    """A pool pinned to gh-runner:2.328.0 must not be auto-built as some other agent."""
+
+    def test_dotted_numeric_tag_is_a_version(self) -> None:
+        assert _pinned_runner_version("gh-runner:2.328.0") == "2.328.0"
+        assert _pinned_runner_version("gh-runner:2.335") == "2.335"
+
+    def test_non_version_tags_yield_nothing(self) -> None:
+        for image in ("gh-runner:latest", "gh-runner", "gh-runner:dev", "custom/img:php8"):
+            assert _pinned_runner_version(image) == ""
+
+    def test_build_passes_the_pinned_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(docker_client, "_host_docker_gid", lambda: 988)
+        monkeypatch.setattr(client, "_image_state", lambda image, gid: "missing")
+        monkeypatch.setattr(docker_client.Path, "exists", lambda self: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+
+        client.ensure_image("gh-runner:2.328.0")
+
+        args = recorded[0]
+        assert "RUNNER_VERSION=2.328.0" in args
+        assert args[args.index("-t") + 1] == "gh-runner:2.328.0"
+
+    def test_latest_build_leaves_the_version_to_the_dockerfile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(docker_client, "_host_docker_gid", lambda: 988)
+        monkeypatch.setattr(client, "_image_state", lambda image, gid: "missing")
+        monkeypatch.setattr(docker_client.Path, "exists", lambda self: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+
+        client.ensure_image("gh-runner:latest")
+
+        assert not any(a.startswith("RUNNER_VERSION=") for a in recorded[0])

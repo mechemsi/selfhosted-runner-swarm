@@ -82,6 +82,25 @@ CREATE TABLE IF NOT EXISTS runner_status (
     updated_at REAL NOT NULL
 );
 
+-- What each runner actually ran. Populated from job data the queue scan
+-- already fetches, so it costs no extra GitHub requests.
+CREATE TABLE IF NOT EXISTS runner_jobs (
+    job_id     INTEGER PRIMARY KEY,
+    pool       TEXT NOT NULL DEFAULT '',
+    repo       TEXT NOT NULL DEFAULT '',
+    workflow   TEXT NOT NULL DEFAULT '',
+    job_name   TEXT NOT NULL DEFAULT '',
+    runner     TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT '',
+    conclusion TEXT NOT NULL DEFAULT '',
+    url        TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    ts         REAL NOT NULL,
+    ended_ts   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_ts ON runner_jobs(ts);
+CREATE INDEX IF NOT EXISTS idx_jobs_runner ON runner_jobs(runner);
+
 CREATE TABLE IF NOT EXISTS idempotency (
     key      TEXT PRIMARY KEY,
     response TEXT NOT NULL,
@@ -327,6 +346,111 @@ class SqliteStore:
             }
             for row in rows
         }
+
+    # ── jobs (what each runner actually ran) ───────────────────────────────
+
+    def sync_jobs(
+        self, pool: str, jobs: list[tuple[int, str, str, str, str, str, str, str, str]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Record this scan's jobs. Returns (newly started, just finished).
+
+        Each tuple is (job_id, repo, workflow, job_name, runner, status,
+        conclusion, url, started_at). The two returned lists are what the caller
+        logs, so a started or finished job produces exactly one log line.
+        """
+        now = time.time()
+        started: list[dict[str, Any]] = []
+        finished: list[dict[str, Any]] = []
+
+        with self._lock:
+            known = {
+                row["job_id"]: dict(row)
+                for row in self._db.execute(
+                    "SELECT job_id, status, ended_ts FROM runner_jobs WHERE pool = ?", (pool,)
+                ).fetchall()
+            }
+            seen: set[int] = set()
+
+            for job_id, repo, workflow, name, runner, status, conclusion, url, start in jobs:
+                seen.add(job_id)
+                previous = known.get(job_id)
+                record = {
+                    "job_id": job_id,
+                    "repo": repo,
+                    "workflow": workflow,
+                    "job_name": name,
+                    "runner": runner,
+                    "status": status,
+                    "conclusion": conclusion,
+                    "url": url,
+                }
+                ended = now if status == "completed" else None
+                self._db.execute(
+                    "INSERT INTO runner_jobs (job_id, pool, repo, workflow, job_name, runner,"
+                    " status, conclusion, url, started_at, ts, ended_ts)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(job_id) DO UPDATE SET status=excluded.status,"
+                    " conclusion=excluded.conclusion, runner=excluded.runner,"
+                    " ended_ts=COALESCE(runner_jobs.ended_ts, excluded.ended_ts)",
+                    (
+                        job_id,
+                        pool,
+                        repo,
+                        workflow,
+                        name,
+                        runner,
+                        status,
+                        conclusion,
+                        url,
+                        start,
+                        now,
+                        ended,
+                    ),
+                )
+                if previous is None:
+                    started.append(record)
+                elif status == "completed" and previous["ended_ts"] is None:
+                    finished.append(record)
+
+            # A job whose run left the queued/in_progress window stops being
+            # reported. Close it out rather than leaving it "running" forever.
+            for job_id, previous in known.items():
+                if job_id in seen or previous["ended_ts"] is not None:
+                    continue
+                self._db.execute(
+                    "UPDATE runner_jobs SET status='completed',"
+                    " conclusion=CASE conclusion WHEN '' THEN 'unobserved' ELSE conclusion END,"
+                    " ended_ts=? WHERE job_id=?",
+                    (now, job_id),
+                )
+                row = self._db.execute(
+                    "SELECT job_id, repo, workflow, job_name, runner, conclusion, url"
+                    " FROM runner_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+                if row is not None:
+                    finished.append(dict(row))
+
+            self._db.commit()
+
+        return started, finished
+
+    def recent_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._read(
+            "SELECT job_id, pool, repo, workflow, job_name, runner, status, conclusion,"
+            " url, started_at, ts, ended_ts FROM runner_jobs ORDER BY ts DESC, job_id DESC"
+            " LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in rows]
+
+    def jobs_by_runner(self) -> dict[str, dict[str, Any]]:
+        """The job each runner is currently executing, keyed by runner name."""
+        rows = self._read(
+            "SELECT runner, repo, workflow, job_name, url FROM runner_jobs"
+            " WHERE ended_ts IS NULL AND runner != '' AND status = 'in_progress'"
+        )
+        return {row["runner"]: dict(row) for row in rows}
 
     # ── idempotency ────────────────────────────────────────────────────────
 
