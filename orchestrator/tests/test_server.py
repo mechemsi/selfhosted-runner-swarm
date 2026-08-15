@@ -21,12 +21,12 @@ from rorch.server import (
     resolve_token,
     start,
 )
-from rorch.store import SqliteStore
+from rorch.store import Store
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> SqliteStore:
-    return SqliteStore(str(tmp_path / "rorch.db"))
+def store(tmp_path: Path) -> Store:
+    return Store(str(tmp_path / "rorch.db"))
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def docker() -> MagicMock:
 
 
 @pytest.fixture
-def deps(pool: PoolConfig, store: SqliteStore, docker: MagicMock) -> Deps:
+def deps(pool: PoolConfig, store: Store, docker: MagicMock) -> Deps:
     resolver = ConfigResolver([pool], 10, 0, store)
     return Deps(store=store, resolver=resolver, docker=docker, token="")
 
@@ -100,7 +100,7 @@ class TestAuth:
 
 class TestState:
     def test_state_reports_pools_and_containers(
-        self, client: FlaskClient, store: SqliteStore, pool: PoolConfig
+        self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:
         store.record_tick(pool.name, pool.display, 2, 2, 1, 1, 4, 0.3)
         body = _json(client.get("/api/state"))
@@ -129,7 +129,7 @@ class TestContainerControl:
         docker.stop_container.assert_called_once_with("gh-runner-test-pool-abc123")
 
     def test_stop_busy_runner_requires_confirmation(
-        self, client: FlaskClient, store: SqliteStore, docker: MagicMock
+        self, client: FlaskClient, store: Store, docker: MagicMock
     ) -> None:
         store.replace_runner_status("test-pool", [("gh-runner-test-pool-abc123", "online", True)])
         response = client.post("/api/containers/gh-runner-test-pool-abc123/stop", json={})
@@ -138,7 +138,7 @@ class TestContainerControl:
         docker.stop_container.assert_not_called()
 
     def test_confirmed_stop_of_busy_runner_is_audited(
-        self, client: FlaskClient, store: SqliteStore, docker: MagicMock
+        self, client: FlaskClient, store: Store, docker: MagicMock
     ) -> None:
         store.replace_runner_status("test-pool", [("gh-runner-test-pool-abc123", "online", True)])
         response = client.post(
@@ -157,7 +157,7 @@ class TestContainerControl:
             assert client.post(f"/api/containers/{name}/stop", json={}).status_code == 400
         docker.stop_container.assert_not_called()
 
-    def test_protect_toggles_the_flag(self, client: FlaskClient, store: SqliteStore) -> None:
+    def test_protect_toggles_the_flag(self, client: FlaskClient, store: Store) -> None:
         client.post("/api/containers/gh-runner-test-pool-abc123/protect", json={"protected": True})
         assert "gh-runner-test-pool-abc123" in store.protected_containers()
 
@@ -190,14 +190,14 @@ class TestIdempotency:
 
 
 class TestPoolControl:
-    def test_pause_and_resume(self, client: FlaskClient, store: SqliteStore) -> None:
+    def test_pause_and_resume(self, client: FlaskClient, store: Store) -> None:
         client.post("/api/pools/test-pool/state", json={"paused": True})
         assert store.pool_states()["test-pool"].paused is True
 
         client.post("/api/pools/test-pool/state", json={"paused": False})
         assert store.pool_states()["test-pool"].paused is False
 
-    def test_drain_preserves_pause_flag(self, client: FlaskClient, store: SqliteStore) -> None:
+    def test_drain_preserves_pause_flag(self, client: FlaskClient, store: Store) -> None:
         client.post("/api/pools/test-pool/state", json={"paused": True})
         client.post("/api/pools/test-pool/state", json={"draining": True})
         state = store.pool_states()["test-pool"]
@@ -214,7 +214,7 @@ class TestPoolControl:
         docker.stop_container.assert_called_once_with("gh-runner-test-pool-abc123")
 
     def test_scale_down_refuses_when_every_runner_is_busy(
-        self, client: FlaskClient, store: SqliteStore, docker: MagicMock
+        self, client: FlaskClient, store: Store, docker: MagicMock
     ) -> None:
         store.replace_runner_status("test-pool", [("gh-runner-test-pool-abc123", "online", True)])
         response = client.post("/api/pools/test-pool/scale", json={"delta": -1})
@@ -286,7 +286,7 @@ class TestConfigEditing:
 
 class TestMetrics:
     def test_prometheus_exposition(
-        self, client: FlaskClient, store: SqliteStore, pool: PoolConfig
+        self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:
         store.record_tick(pool.name, pool.display, 2, 2, 1, 1, 3, 0.3)
         body = client.get("/metrics").get_data(as_text=True)
@@ -450,7 +450,7 @@ class TestBruteForceGuard:
 
 class TestTokenPersistence:
     def test_generated_token_is_reused_after_restart(
-        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
         monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")
@@ -461,7 +461,7 @@ class TestTokenPersistence:
         assert first and first == second
 
     def test_env_token_overrides_the_stored_one(
-        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")
         stored = resolve_token(store)
@@ -470,7 +470,7 @@ class TestTokenPersistence:
         assert resolve_token(store) == "from-env" != stored
 
     def test_loopback_bind_needs_no_token(
-        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
         monkeypatch.setenv("RORCH_API_HOST", "127.0.0.1")
@@ -478,7 +478,7 @@ class TestTokenPersistence:
         assert resolve_token(store) == ""
 
     def test_stored_token_is_never_exposed_by_the_api(
-        self, deps: Deps, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+        self, deps: Deps, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
         monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")

@@ -18,6 +18,7 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       docker: ${{ steps.filter.outputs.docker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +35,8 @@ jobs:
               - 'runner-image/**'
               - 'orchestrator/requirements.txt'
               - 'orchestrator/pyproject.toml'
+            dashboard:
+              - 'dashboard/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -300,6 +303,78 @@ jobs:
           image-ref: gh-runner-orchestrator:ci-${{ github.sha }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+
+  # The store speaks two dialects and the differences (reserved words, upsert
+  # syntax, TEXT keys) all pass every SQLite test and then fail on the first
+  # production write. This job is the only thing that catches them.
+  test-mariadb:
+    name: test-mariadb
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: rootpw
+          MARIADB_DATABASE: rorch
+          MARIADB_USER: rorch
+          MARIADB_PASSWORD: rorchpw
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: orchestrator/pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run the MariaDB store tests
+        env:
+          RORCH_TEST_DB_URL: mysql://rorch:rorchpw@127.0.0.1:3306/rorch
+        run: pytest tests/test_mariadb.py -v
+
+  dashboard-build:
+    name: dashboard-build
+    needs: changes
+    if: needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # The gateway holds the orchestrator's credentials, so a known-vulnerable
+      # dependency here is a bigger deal than in an ordinary frontend.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
   # Advisory. Labels reconcile within the size/ namespace on every push.
   pr-size:

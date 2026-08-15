@@ -1,16 +1,19 @@
 # Copyright (c) 2026 Mechemsi. All rights reserved.
 # Licensed under the MIT License. See LICENSE file in the project root.
 
-"""SQLite persistence for snapshots, events, config overrides and control state.
+"""Durable orchestrator state: SQLite by default, MariaDB when configured.
 
 The orchestrator runs fine without this: `__main__` passes ``None`` when no
 database can be opened, and every call site treats a missing store as "behave
-exactly as before". Deleting the file returns the orchestrator to pure
-``config.yml`` behaviour.
+exactly as before". That degradation matters more with an external database —
+a MariaDB outage must not stop runners being provisioned.
 
-# ponytail: stdlib sqlite3 behind one lock, not a connection pool or an ORM.
-# The write rate is a handful of rows per tick; if that ever becomes the
-# bottleneck, switch to per-thread connections before reaching for a server DB.
+Set ``RORCH_DB_URL=mysql://user:pass@mariadb:3306/rorch`` to use MariaDB;
+anything without a scheme is treated as a SQLite file path.
+
+# ponytail: one connection behind one lock, not a pool. The write rate is a
+# handful of rows per tick and reads come from one Flask thread; add pooling
+# when a measurement says to, not before.
 """
 
 import json
@@ -21,102 +24,40 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from rorch.dialect import Dialect, Dsn, parse_dsn
+
 log = logging.getLogger(__name__)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tick_snapshots (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts         REAL    NOT NULL,
-    pool       TEXT    NOT NULL,
-    display    TEXT    NOT NULL DEFAULT '',
-    containers INTEGER NOT NULL,
-    online     INTEGER NOT NULL,
-    idle       INTEGER NOT NULL,
-    busy       INTEGER NOT NULL,
-    queued     INTEGER NOT NULL,
-    duration   REAL    NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON tick_snapshots(ts);
-CREATE INDEX IF NOT EXISTS idx_snapshots_pool_ts ON tick_snapshots(pool, ts);
 
-CREATE TABLE IF NOT EXISTS runner_events (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts        REAL NOT NULL,
-    pool      TEXT NOT NULL DEFAULT '',
-    container TEXT NOT NULL DEFAULT '',
-    event     TEXT NOT NULL,
-    reason    TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_events_ts ON runner_events(ts);
+# The job upsert keeps a COALESCE so a completion time is never overwritten by a
+# later scan, which neither dialect helper can express generically.
+_JOB_COLUMNS = (
+    "job_id, pool, repo, workflow, job_name, runner,"
+    " status, conclusion, url, started_at, ts, ended_ts"
+)
+_JOB_UPSERT_SQLITE = (
+    f"INSERT INTO runner_jobs ({_JOB_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON CONFLICT(job_id) DO UPDATE SET status=excluded.status,"
+    " conclusion=excluded.conclusion, runner=excluded.runner,"
+    " ended_ts=COALESCE(runner_jobs.ended_ts, excluded.ended_ts)"
+)
+_JOB_UPSERT_MARIADB = (
+    f"INSERT INTO runner_jobs ({_JOB_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    " ON DUPLICATE KEY UPDATE status=VALUES(status),"
+    " conclusion=VALUES(conclusion), runner=VALUES(runner),"
+    " ended_ts=COALESCE(ended_ts, VALUES(ended_ts))"
+)
 
-CREATE TABLE IF NOT EXISTS pool_overrides (
-    pool       TEXT PRIMARY KEY,
-    data       TEXT NOT NULL DEFAULT '{}',
-    origin     TEXT NOT NULL DEFAULT 'yaml',
-    disabled   INTEGER NOT NULL DEFAULT 0,
-    updated_at REAL NOT NULL
-);
+# pymysql raises these when the server has closed an idle connection.
+_DISCONNECT_CODES = {2006, 2013, 4031}
 
-CREATE TABLE IF NOT EXISTS global_overrides (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL,
-    updated_at REAL NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS pool_state (
-    pool     TEXT PRIMARY KEY,
-    paused   INTEGER NOT NULL DEFAULT 0,
-    draining INTEGER NOT NULL DEFAULT 0
-);
+def _is_disconnect(error: Exception) -> bool:
+    code = getattr(error, "args", [None])[0]
+    if code in _DISCONNECT_CODES:
+        return True
+    return "MySQL server has gone away" in str(error) or "Lost connection" in str(error)
 
-CREATE TABLE IF NOT EXISTS protected_containers (
-    container TEXT PRIMARY KEY,
-    since     REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS runner_status (
-    container  TEXT PRIMARY KEY,
-    pool       TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT '',
-    busy       INTEGER NOT NULL DEFAULT 0,
-    updated_at REAL NOT NULL
-);
-
--- What each runner actually ran. Populated from job data the queue scan
--- already fetches, so it costs no extra GitHub requests.
-CREATE TABLE IF NOT EXISTS runner_jobs (
-    job_id     INTEGER PRIMARY KEY,
-    pool       TEXT NOT NULL DEFAULT '',
-    repo       TEXT NOT NULL DEFAULT '',
-    workflow   TEXT NOT NULL DEFAULT '',
-    job_name   TEXT NOT NULL DEFAULT '',
-    runner     TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT '',
-    conclusion TEXT NOT NULL DEFAULT '',
-    url        TEXT NOT NULL DEFAULT '',
-    started_at TEXT NOT NULL DEFAULT '',
-    ts         REAL NOT NULL,
-    ended_ts   REAL
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_ts ON runner_jobs(ts);
-CREATE INDEX IF NOT EXISTS idx_jobs_runner ON runner_jobs(runner);
-
-CREATE TABLE IF NOT EXISTS idempotency (
-    key      TEXT PRIMARY KEY,
-    response TEXT NOT NULL,
-    ts       REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-    id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts     REAL NOT NULL,
-    actor  TEXT NOT NULL DEFAULT '',
-    action TEXT NOT NULL,
-    target TEXT NOT NULL DEFAULT '',
-    detail TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
-"""
 
 # Event names recorded in runner_events.
 EVENT_SPAWN = "spawn"
@@ -136,18 +77,68 @@ class PoolState:
     draining: bool = False
 
 
-class SqliteStore:
+class Store:
     """Durable orchestrator state. Every method is safe to call from any thread."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, url: str) -> None:
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._dsn: Dsn = parse_dsn(url)
+        self.dialect = Dialect(self._dsn)
+        self._db = self._connect()
         with self._lock:
-            self._db.execute("PRAGMA journal_mode=WAL")
-            self._db.executescript(SCHEMA)
+            for statement in self.dialect.schema():
+                self._execute(statement)
             self._db.commit()
-        log.info("State store ready at %s", path)
+        log.info("State store ready at %s", self._dsn.describe())
+
+    @property
+    def is_mariadb(self) -> bool:
+        return self._dsn.is_mariadb
+
+    def _connect(self) -> Any:
+        if not self._dsn.is_mariadb:
+            db = sqlite3.connect(self._dsn.path, check_same_thread=False)
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA journal_mode=WAL")
+            return db
+
+        import pymysql  # imported lazily so SQLite installs need no driver
+        from pymysql.cursors import DictCursor
+
+        return pymysql.connect(
+            host=self._dsn.host,
+            port=self._dsn.port,
+            user=self._dsn.user,
+            password=self._dsn.password,
+            database=self._dsn.database,
+            charset="utf8mb4",
+            autocommit=False,
+            cursorclass=DictCursor,
+        )
+
+    def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        """Run one statement, reconnecting once if the server dropped us.
+
+        MariaDB closes idle connections (wait_timeout), and the orchestrator is
+        idle between ticks by design, so a stale-connection retry is required
+        rather than optional.
+        """
+        statement = self.dialect.sql(sql)
+        try:
+            return self._run(statement, params)
+        except Exception as error:
+            if not self._dsn.is_mariadb or not _is_disconnect(error):
+                raise
+            log.warning("Database connection lost, reconnecting: %s", error)
+            self._db = self._connect()
+            return self._run(statement, params)
+
+    def _run(self, statement: str, params: tuple[Any, ...]) -> Any:
+        if self._dsn.is_mariadb:
+            cursor = self._db.cursor()
+            cursor.execute(statement, params)
+            return cursor
+        return self._db.execute(statement, params)
 
     def close(self) -> None:
         with self._lock:
@@ -155,12 +146,12 @@ class SqliteStore:
 
     def _write(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         with self._lock:
-            self._db.execute(sql, params)
+            self._execute(sql, params)
             self._db.commit()
 
-    def _read(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+    def _read(self, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
         with self._lock:
-            return self._db.execute(sql, params).fetchall()
+            return list(self._execute(sql, params).fetchall())
 
     # ── history ────────────────────────────────────────────────────────────
 
@@ -231,7 +222,7 @@ class SqliteStore:
         with self._lock:
             deleted = 0
             for table in ("tick_snapshots", "runner_events", "audit_log"):
-                cur = self._db.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+                cur = self._execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
                 deleted += cur.rowcount
             self._db.commit()
         if deleted:
@@ -264,11 +255,12 @@ class SqliteStore:
         disabled: bool = False,
     ) -> None:
         self._write(
-            "INSERT INTO pool_overrides (pool, data, origin, disabled, updated_at)"
-            " VALUES (?,?,?,?,?)"
-            " ON CONFLICT(pool) DO UPDATE SET data=excluded.data,"
-            " origin=excluded.origin, disabled=excluded.disabled,"
-            " updated_at=excluded.updated_at",
+            self.dialect.upsert(
+                "pool_overrides",
+                ["pool", "data", "origin", "disabled", "updated_at"],
+                key="pool",
+                updates=["data", "origin", "disabled", "updated_at"],
+            ),
             (pool, json.dumps(data), origin, int(disabled), time.time()),
         )
 
@@ -277,19 +269,22 @@ class SqliteStore:
         self._write("DELETE FROM pool_overrides WHERE pool = ?", (pool,))
 
     def global_overrides(self) -> dict[str, str]:
-        rows = self._read("SELECT key, value FROM global_overrides")
+        rows = self._read("SELECT `key`, value FROM global_overrides")
         return {row["key"]: row["value"] for row in rows}
 
     def set_global(self, key: str, value: str) -> None:
         self._write(
-            "INSERT INTO global_overrides (key, value, updated_at) VALUES (?,?,?)"
-            " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
-            " updated_at=excluded.updated_at",
+            self.dialect.upsert(
+                "global_overrides",
+                ["key", "value", "updated_at"],
+                key="`key`",
+                updates=["value", "updated_at"],
+            ),
             (key, value, time.time()),
         )
 
     def delete_global(self, key: str) -> None:
-        self._write("DELETE FROM global_overrides WHERE key = ?", (key,))
+        self._write("DELETE FROM global_overrides WHERE `key` = ?", (key,))
 
     # ── control state ──────────────────────────────────────────────────────
 
@@ -302,9 +297,12 @@ class SqliteStore:
 
     def set_pool_state(self, pool: str, paused: bool, draining: bool) -> None:
         self._write(
-            "INSERT INTO pool_state (pool, paused, draining) VALUES (?,?,?)"
-            " ON CONFLICT(pool) DO UPDATE SET paused=excluded.paused,"
-            " draining=excluded.draining",
+            self.dialect.upsert(
+                "pool_state",
+                ["pool", "paused", "draining"],
+                key="pool",
+                updates=["paused", "draining"],
+            ),
             (pool, int(paused), int(draining)),
         )
 
@@ -316,7 +314,12 @@ class SqliteStore:
     def set_protected(self, container: str, protected: bool) -> None:
         if protected:
             self._write(
-                "INSERT OR REPLACE INTO protected_containers (container, since) VALUES (?,?)",
+                self.dialect.upsert(
+                    "protected_containers",
+                    ["container", "since"],
+                    key="container",
+                    updates=["since"],
+                ),
                 (container, time.time()),
             )
         else:
@@ -327,13 +330,16 @@ class SqliteStore:
     def replace_runner_status(self, pool: str, rows: list[tuple[str, str, bool]]) -> None:
         """Swap in this pool's runner list: (container, status, busy)."""
         now = time.time()
+        upsert = self.dialect.upsert(
+            "runner_status",
+            ["container", "pool", "status", "busy", "updated_at"],
+            key="container",
+            updates=["pool", "status", "busy", "updated_at"],
+        )
         with self._lock:
-            self._db.execute("DELETE FROM runner_status WHERE pool = ?", (pool,))
-            self._db.executemany(
-                "INSERT OR REPLACE INTO runner_status"
-                " (container, pool, status, busy, updated_at) VALUES (?,?,?,?,?)",
-                [(name, pool, status, int(busy), now) for name, status, busy in rows],
-            )
+            self._execute("DELETE FROM runner_status WHERE pool = ?", (pool,))
+            for name, status, busy in rows:
+                self._execute(upsert, (name, pool, status, int(busy), now))
             self._db.commit()
 
     def runner_status(self) -> dict[str, dict[str, Any]]:
@@ -365,7 +371,7 @@ class SqliteStore:
         with self._lock:
             known = {
                 row["job_id"]: dict(row)
-                for row in self._db.execute(
+                for row in self._execute(
                     "SELECT job_id, status, ended_ts FROM runner_jobs WHERE pool = ?", (pool,)
                 ).fetchall()
             }
@@ -385,13 +391,8 @@ class SqliteStore:
                     "url": url,
                 }
                 ended = now if status == "completed" else None
-                self._db.execute(
-                    "INSERT INTO runner_jobs (job_id, pool, repo, workflow, job_name, runner,"
-                    " status, conclusion, url, started_at, ts, ended_ts)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT(job_id) DO UPDATE SET status=excluded.status,"
-                    " conclusion=excluded.conclusion, runner=excluded.runner,"
-                    " ended_ts=COALESCE(runner_jobs.ended_ts, excluded.ended_ts)",
+                self._execute(
+                    _JOB_UPSERT_MARIADB if self.is_mariadb else _JOB_UPSERT_SQLITE,
                     (
                         job_id,
                         pool,
@@ -417,17 +418,18 @@ class SqliteStore:
             for job_id, previous in known.items():
                 if job_id in seen or previous["ended_ts"] is not None:
                     continue
-                self._db.execute(
+                self._execute(
                     "UPDATE runner_jobs SET status='completed',"
                     " conclusion=CASE conclusion WHEN '' THEN 'unobserved' ELSE conclusion END,"
                     " ended_ts=? WHERE job_id=?",
                     (now, job_id),
                 )
-                row = self._db.execute(
+                found = self._execute(
                     "SELECT job_id, repo, workflow, job_name, runner, conclusion, url"
                     " FROM runner_jobs WHERE job_id=?",
                     (job_id,),
-                ).fetchone()
+                ).fetchall()
+                row = found[0] if found else None
                 if row is not None:
                     finished.append(dict(row))
 
@@ -456,12 +458,14 @@ class SqliteStore:
 
     def idempotent_response(self, key: str) -> str | None:
         """Previously recorded response for this key, if the caller retried."""
-        rows = self._read("SELECT response FROM idempotency WHERE key = ?", (key,))
+        rows = self._read("SELECT response FROM idempotency WHERE `key` = ?", (key,))
         return rows[0]["response"] if rows else None
 
     def remember_response(self, key: str, response: str) -> None:
         self._write(
-            "INSERT OR REPLACE INTO idempotency (key, response, ts) VALUES (?,?,?)",
+            self.dialect.upsert(
+                "idempotency", ["key", "response", "ts"], key="`key`", updates=["response", "ts"]
+            ),
             (key, response, time.time()),
         )
 
@@ -484,17 +488,25 @@ class SqliteStore:
         return [dict(row) for row in rows]
 
 
-def open_store(path: str) -> SqliteStore | None:
-    """Open the store, returning None if the path is unusable.
+def open_store(url: str) -> Store | None:
+    """Open the store, returning None if it is unusable.
 
     A broken database must never stop runners from being provisioned, so this
-    degrades to the pre-database behaviour instead of raising.
+    degrades to the pre-database behaviour instead of raising. That matters more
+    with MariaDB than it did with a local file: a database outage should cost
+    the dashboard, not the runners.
     """
     try:
-        from pathlib import Path
+        dsn = parse_dsn(url)
+        if not dsn.is_mariadb:
+            from pathlib import Path
 
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return SqliteStore(path)
+            Path(dsn.path).parent.mkdir(parents=True, exist_ok=True)
+        return Store(url)
     except Exception:
-        log.error("Could not open state store at %s — running without it", path, exc_info=True)
+        try:
+            target = parse_dsn(url).describe()
+        except Exception:
+            target = "<unparseable RORCH_DB_URL>"
+        log.error("Could not open state store at %s — running without it", target, exc_info=True)
         return None

@@ -1,25 +1,78 @@
 services:
 
+  mariadb:
+    image: mariadb:11
+    container_name: rorch-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-rorch}
+      MARIADB_USER: ${MARIADB_USER:-rorch}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?set MARIADB_PASSWORD in .env}
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+    # Not published: only the orchestrator talks to it, over the compose network.
+    volumes:
+      - rorch-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   orchestrator:
     build: ./orchestrator
     container_name: gh-runner-orchestrator
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      mariadb:
+        condition: service_healthy
     environment:
       - POLL_INTERVAL=${POLL_INTERVAL:-15}
-      - RORCH_API_HOST=${RORCH_API_HOST:-0.0.0.0}
-      - RORCH_API_PORT=${RORCH_API_PORT:-8080}
+      - RORCH_API_HOST=0.0.0.0
+      - RORCH_API_PORT=8080
       - RORCH_API_TOKEN=${RORCH_API_TOKEN:-}
-      - HISTORY_RETENTION_DAYS=${HISTORY_RETENTION_DAYS:-14}
-    # Loopback-only on the host: this port can start root containers through
-    # the mounted Docker socket. Publish it wider only behind a real proxy.
-    ports:
-      - "127.0.0.1:${RORCH_API_PORT:-8080}:8080"
+      - RORCH_API_READONLY_TOKEN=${RORCH_API_READONLY_TOKEN:-}
+      - HISTORY_RETENTION_DAYS=${HISTORY_RETENTION_DAYS:-365}
+      - RORCH_DB_URL=mysql://${MARIADB_USER:-rorch}:${MARIADB_PASSWORD}@mariadb:3306/${MARIADB_DATABASE:-rorch}
+    # Deliberately NOT published. The dashboard reaches it over the compose
+    # network; exposing this port would expose an API that can start root
+    # containers through the mounted Docker socket.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # manage runner containers
       - ./config.yml:/app/config.yml:ro             # pool config (hot-reload on restart)
       - ./runner-image:/app/runner-image:ro         # build context: rebuilds gh-runner if missing
-      - rorch-data:/app/data                        # dashboard history + config overrides
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard:
+    build: ./dashboard
+    container_name: rorch-dashboard
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    environment:
+      - RORCH_URL=http://orchestrator:8080
+      - RORCH_API_TOKEN=${RORCH_API_TOKEN:-}
+      - RORCH_API_READONLY_TOKEN=${RORCH_API_READONLY_TOKEN:-}
+      - DASHBOARD_SESSION_SECRET=${DASHBOARD_SESSION_SECRET:?set DASHBOARD_SESSION_SECRET in .env}
+      - DASHBOARD_ADMIN_PASSWORD=${DASHBOARD_ADMIN_PASSWORD:-}
+      - DASHBOARD_VIEWER_PASSWORD=${DASHBOARD_VIEWER_PASSWORD:-}
+      # Set to 0 only when serving plain HTTP on a trusted LAN; the session
+      # cookie is otherwise refused by the browser over http://.
+      - COOKIE_SECURE=${COOKIE_SECURE:-0}
+      - TRUST_PROXY=${TRUST_PROXY:-0}
+    # This is the only port that faces the network.
+    ports:
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-3000}:3000"
     logging:
       driver: json-file
       options:
@@ -27,4 +80,4 @@ services:
         max-file: "3"
 
 volumes:
-  rorch-data:
+  rorch-db:

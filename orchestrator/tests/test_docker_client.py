@@ -18,7 +18,7 @@ from rorch.docker_client import (
     _parse_running_minutes,
     _pinned_runner_version,
 )
-from rorch.store import EVENT_MANUAL_STOP, SqliteStore
+from rorch.store import EVENT_MANUAL_STOP, Store
 
 
 class TestParseRunningMinutes:
@@ -225,7 +225,7 @@ class TestStopContainer:
     def test_records_event_when_a_store_is_attached(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        store = SqliteStore(str(tmp_path / "rorch.db"))
+        store = Store(str(tmp_path / "rorch.db"))
         client = DockerClient(store=store)
         monkeypatch.setattr(client, "_capture", lambda args: ("", 0))
 

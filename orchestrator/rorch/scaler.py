@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
-from rorch.store import EVENT_DEREGISTER, PoolState, SqliteStore
+from rorch.store import EVENT_DEREGISTER, PoolState, Store
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class PoolScaler:
         docker: ContainerManager,
         clock: Callable[[], float] = time.monotonic,
         max_total_runners: int = 0,
-        store: SqliteStore | None = None,
+        store: Store | None = None,
     ) -> None:
         self._github = github
         self._docker = docker
