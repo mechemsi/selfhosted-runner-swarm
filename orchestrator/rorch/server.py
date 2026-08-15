@@ -46,6 +46,55 @@ AUTH_COOKIE = "rorch_token"
 LOOPBACK_BINDS = {"127.0.0.1", "localhost", "::1"}
 
 
+# Key under which a generated token is persisted, so it survives a restart
+# instead of forcing the operator to re-read the logs after every deploy.
+TOKEN_KEY = "api_token"
+
+# Brute-force protection. The token is the only credential, so unlimited
+# guessing against an exposed port is the whole attack.
+MAX_TOKEN_FAILURES = 10
+LOCKOUT_SECONDS = 300
+
+
+class TokenGuard:
+    """Locks out a client IP after repeated bad tokens.
+
+    # ponytail: in-process counters, not Redis. One orchestrator, one process;
+    # a restart clearing the counters is acceptable for a rate limiter whose
+    # job is to make online guessing impractical, not to be a security ledger.
+    """
+
+    def __init__(
+        self,
+        max_failures: int = MAX_TOKEN_FAILURES,
+        lockout_seconds: int = LOCKOUT_SECONDS,
+    ) -> None:
+        self._max = max_failures
+        self._lockout = lockout_seconds
+        self._lock = threading.Lock()
+        self._failures: dict[str, tuple[int, float]] = {}
+
+    def locked_until(self, client: str) -> float:
+        with self._lock:
+            count, last = self._failures.get(client, (0, 0.0))
+            if count < self._max:
+                return 0.0
+            until = last + self._lockout
+            if until <= time.time():
+                self._failures.pop(client, None)
+                return 0.0
+            return until
+
+    def record_failure(self, client: str) -> None:
+        with self._lock:
+            count, _ = self._failures.get(client, (0, 0.0))
+            self._failures[client] = (count + 1, time.time())
+
+    def record_success(self, client: str) -> None:
+        with self._lock:
+            self._failures.pop(client, None)
+
+
 class Deps:
     """Everything the HTTP layer is allowed to touch."""
 
@@ -56,12 +105,17 @@ class Deps:
         docker: ContainerManager,
         rate_limit_status: Callable[[], dict[str, Any]] | None = None,
         token: str = "",
+        readonly_token: str = "",
     ) -> None:
         self.store = store
         self.resolver = resolver
         self.docker = docker
         self.rate_limit_status = rate_limit_status or (lambda: {})
         self.token = token
+        # Grants every read endpoint but no control action, so a dashboard can
+        # be handed out without also handing over container control.
+        self.readonly_token = readonly_token
+        self.guard = TokenGuard()
 
 
 def _deps() -> Deps:
@@ -72,23 +126,70 @@ def _actor() -> str:
     return request.headers.get("X-Actor", request.remote_addr or "unknown")
 
 
+def _client() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _supplied_token() -> str:
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        return header[len("Bearer ") :]
+    return request.args.get("token") or request.cookies.get(AUTH_COOKIE) or ""
+
+
+def _scope(deps: Deps, supplied: str) -> str | None:
+    """'write', 'read', or None. No configured token at all means open access."""
+    if not deps.token and not deps.readonly_token:
+        return "write"
+    if deps.token and hmac.compare_digest(supplied, deps.token):
+        return "write"
+    if deps.readonly_token and hmac.compare_digest(supplied, deps.readonly_token):
+        return "read"
+    return None
+
+
+def _authorize(write: bool) -> Any | None:
+    """None when the request may proceed, else the error response to return."""
+    deps = _deps()
+    client = _client()
+
+    locked = deps.guard.locked_until(client)
+    if locked:
+        retry_after = max(1, int(locked - time.time()))
+        log.warning("Rejecting %s — too many bad tokens, locked for %ds", client, retry_after)
+        response = jsonify(error="too many failed attempts")
+        response.headers["Retry-After"] = str(retry_after)
+        return response, 429
+
+    scope = _scope(deps, _supplied_token())
+    if scope is None:
+        deps.guard.record_failure(client)
+        return jsonify(error="unauthorized"), 401
+
+    deps.guard.record_success(client)
+    if write and scope != "write":
+        return jsonify(error="read-only token: this action requires the control token"), 403
+    return None
+
+
 def require_auth(view: Callable[..., Any]) -> Callable[..., Any]:
-    """Bearer header, cookie, or ?token=. No configured token means open access."""
+    """Any valid token. Bearer header, cookie, or ?token=."""
 
     @wraps(view)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        expected = _deps().token
-        if not expected:
-            return view(*args, **kwargs)
-        header = request.headers.get("Authorization", "")
-        supplied = (
-            header[len("Bearer ") :]
-            if header.startswith("Bearer ")
-            else request.args.get("token") or request.cookies.get(AUTH_COOKIE) or ""
-        )
-        if not hmac.compare_digest(supplied, expected):
-            return jsonify(error="unauthorized"), 401
-        return view(*args, **kwargs)
+        denied = _authorize(write=False)
+        return denied if denied is not None else view(*args, **kwargs)
+
+    return wrapper
+
+
+def require_write(view: Callable[..., Any]) -> Callable[..., Any]:
+    """Control actions and config changes — the read-only token is refused."""
+
+    @wraps(view)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        denied = _authorize(write=True)
+        return denied if denied is not None else view(*args, **kwargs)
 
     return wrapper
 
@@ -208,13 +309,13 @@ def create_app(deps: Deps) -> Flask:
     # ── container control ──────────────────────────────────────────────────
 
     @app.post("/api/containers/<name>/stop")
-    @require_auth
+    @require_write
     @idempotent
     def stop_container(name: str) -> Any:
         return _stop(deps, name, action="stop")
 
     @app.post("/api/containers/<name>/restart")
-    @require_auth
+    @require_write
     @idempotent
     def restart_container(name: str) -> Any:
         # Runners are ephemeral: there is nothing to restart in place, so this
@@ -222,7 +323,7 @@ def create_app(deps: Deps) -> Flask:
         return _stop(deps, name, action="restart")
 
     @app.post("/api/containers/<name>/protect")
-    @require_auth
+    @require_write
     def protect_container(name: str) -> Any:
         if not _is_runner_container(name):
             return jsonify(error="not a runner container"), 400
@@ -234,7 +335,7 @@ def create_app(deps: Deps) -> Flask:
     # ── pool control ───────────────────────────────────────────────────────
 
     @app.post("/api/pools/<name>/state")
-    @require_auth
+    @require_write
     def set_pool_state(name: str) -> Any:
         if _pool_by_name(deps.resolver, name) is None:
             return jsonify(error=f"unknown pool '{name}'"), 404
@@ -247,7 +348,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, paused=paused, draining=draining)
 
     @app.post("/api/pools/<name>/scale")
-    @require_auth
+    @require_write
     @idempotent
     def scale_pool(name: str) -> Any:
         pool = _pool_by_name(deps.resolver, name)
@@ -271,7 +372,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, stopped=victim, ok=ok)
 
     @app.post("/api/pause")
-    @require_auth
+    @require_write
     def global_pause() -> Any:
         paused = bool(_json_body().get("paused", True))
         deps.store.set_global("paused", "1" if paused else "0")
@@ -297,7 +398,7 @@ def create_app(deps: Deps) -> Flask:
         )
 
     @app.patch("/api/config/pools/<name>")
-    @require_auth
+    @require_write
     def patch_pool(name: str) -> Any:
         body = _json_body()
         rejected = unknown_fields(body)
@@ -324,7 +425,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, overrides=merged)
 
     @app.delete("/api/config/pools/<name>/overrides")
-    @require_auth
+    @require_write
     def reset_pool(name: str) -> Any:
         """Drop the override row so the pool reverts to its config.yml definition."""
         if not any(p.name == name for p in deps.resolver.base_pools):
@@ -334,7 +435,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, reset=True)
 
     @app.post("/api/config/pools")
-    @require_auth
+    @require_write
     def create_pool() -> Any:
         body = _json_body()
         name = str(body.pop("name", "")).strip()
@@ -357,7 +458,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, created=True), 201
 
     @app.delete("/api/config/pools/<name>")
-    @require_auth
+    @require_write
     def remove_pool(name: str) -> Any:
         overrides = deps.store.pool_overrides()
         is_ui = name in overrides and overrides[name]["origin"] == "ui"
@@ -374,7 +475,7 @@ def create_app(deps: Deps) -> Flask:
         return jsonify(pool=name, removed=True)
 
     @app.patch("/api/config/globals")
-    @require_auth
+    @require_write
     def patch_globals() -> Any:
         body = _json_body()
         rejected = sorted(k for k in body if k not in GLOBAL_KEYS)
@@ -685,13 +786,37 @@ def start(deps: Deps, host: str, port: int) -> threading.Thread | None:
     return thread
 
 
-def resolve_token() -> str:
-    """Token from the environment, generating one when bound off-loopback."""
+def resolve_token(store: SqliteStore | None = None) -> str:
+    """Token from the environment, generating and persisting one if needed.
+
+    A generated token used to be regenerated on every start, so an operator had
+    to dig it back out of the logs after each deploy and no bookmark survived.
+    Persisting it in the store keeps the dashboard URL stable; setting
+    RORCH_API_TOKEN still overrides it.
+    """
     token = os.environ.get("RORCH_API_TOKEN", "").strip()
     if token:
         return token
-    if os.environ.get("RORCH_API_HOST", "127.0.0.1") not in LOOPBACK_BINDS:
-        generated = secrets.token_urlsafe(24)
+    if os.environ.get("RORCH_API_HOST", "127.0.0.1") in LOOPBACK_BINDS:
+        return ""
+
+    if store is not None:
+        existing = store.global_overrides().get(TOKEN_KEY, "").strip()
+        if existing:
+            log.info("Using the stored dashboard token (set RORCH_API_TOKEN to override)")
+            return existing
+
+    generated = secrets.token_urlsafe(24)
+    if store is not None:
+        store.set_global(TOKEN_KEY, generated)
+        log.warning(
+            "RORCH_API_TOKEN unset — generated and stored, reused on restart: %s", generated
+        )
+    else:
         log.warning("RORCH_API_TOKEN unset — generated for this run: %s", generated)
-        return generated
-    return ""
+    return generated
+
+
+def resolve_readonly_token() -> str:
+    """Optional token granting reads but no control actions."""
+    return os.environ.get("RORCH_API_READONLY_TOKEN", "").strip()

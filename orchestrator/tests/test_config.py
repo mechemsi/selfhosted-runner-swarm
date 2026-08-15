@@ -17,6 +17,7 @@ from rorch.config import (
     resolve_env,
     validate_pools,
     validation_errors,
+    validation_warnings,
 )
 
 
@@ -294,3 +295,23 @@ class TestShippedExampleConfig:
 
         assert pools, "example.config.yml defines no pools"
         assert validation_errors(pools) == []
+
+
+class TestDuplicatePoolNames:
+    """Two pools with one name share a container prefix and collide."""
+
+    def _pool(self, name: str, repo: str = "widgets") -> PoolConfig:
+        return PoolConfig(name=name, pat="ghp_x", owner="acme", repo=repo)
+
+    def test_duplicate_name_is_warned_about(self) -> None:
+        warnings = validation_warnings([self._pool("dup"), self._pool("dup")])
+        assert len(warnings) == 1
+        assert "defined more than once" in warnings[0]
+        assert "gh-runner-dup" in warnings[0]
+
+    def test_distinct_names_produce_no_warning(self) -> None:
+        assert validation_warnings([self._pool("a"), self._pool("b")]) == []
+
+    def test_duplicates_are_not_fatal(self) -> None:
+        """A running deployment with a duplicate must still start."""
+        assert validation_errors([self._pool("dup"), self._pool("dup")]) == []

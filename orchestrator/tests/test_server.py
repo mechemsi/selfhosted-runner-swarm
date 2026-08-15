@@ -13,7 +13,14 @@ from flask.testing import FlaskClient
 from rorch.config import PoolConfig
 from rorch.protocols import ContainerInfo
 from rorch.resolver import ConfigResolver
-from rorch.server import Deps, create_app, start
+from rorch.server import (
+    MAX_TOKEN_FAILURES,
+    Deps,
+    TokenGuard,
+    create_app,
+    resolve_token,
+    start,
+)
 from rorch.store import SqliteStore
 
 
@@ -341,3 +348,144 @@ class TestDashboardEscaping:
         source = self._SOURCE.read_text(encoding="utf-8")
         assert "safeUrl" in source
         assert 'href="${esc(href)}"' in source
+
+
+class TestScopedTokens:
+    """A read-only token must see everything and change nothing."""
+
+    @pytest.fixture
+    def scoped(self, deps: Deps) -> FlaskClient:
+        deps.token = "control-token"
+        deps.readonly_token = "view-token"
+        return create_app(deps).test_client()
+
+    def _read(self, client: FlaskClient, token: str) -> int:
+        return client.get("/api/state", headers={"Authorization": f"Bearer {token}"}).status_code
+
+    def test_readonly_token_can_read(self, scoped: FlaskClient) -> None:
+        assert self._read(scoped, "view-token") == 200
+
+    def test_control_token_can_read(self, scoped: FlaskClient) -> None:
+        assert self._read(scoped, "control-token") == 200
+
+    def test_readonly_token_cannot_stop_a_runner(
+        self, scoped: FlaskClient, docker: MagicMock
+    ) -> None:
+        response = scoped.post(
+            "/api/containers/gh-runner-test-pool-abc123/stop",
+            json={},
+            headers={"Authorization": "Bearer view-token"},
+        )
+        assert response.status_code == 403
+        docker.stop_container.assert_not_called()
+
+    def test_readonly_token_cannot_edit_config(self, scoped: FlaskClient, deps: Deps) -> None:
+        response = scoped.patch(
+            "/api/config/pools/test-pool",
+            json={"max_runners": 99},
+            headers={"Authorization": "Bearer view-token"},
+        )
+        assert response.status_code == 403
+        assert deps.resolver.resolve().pools[0].max_runners == 5
+
+    def test_readonly_token_cannot_pause(self, scoped: FlaskClient, deps: Deps) -> None:
+        response = scoped.post(
+            "/api/pause", json={"paused": True}, headers={"Authorization": "Bearer view-token"}
+        )
+        assert response.status_code == 403
+        assert deps.resolver.resolve().paused is False
+
+    def test_control_token_still_works_for_writes(
+        self, scoped: FlaskClient, docker: MagicMock
+    ) -> None:
+        response = scoped.post(
+            "/api/containers/gh-runner-test-pool-abc123/stop",
+            json={},
+            headers={"Authorization": "Bearer control-token"},
+        )
+        assert response.status_code == 200
+        docker.stop_container.assert_called_once()
+
+
+class TestBruteForceGuard:
+    def test_locks_out_after_repeated_bad_tokens(self, deps: Deps) -> None:
+        deps.token = "s3cret"
+        client = create_app(deps).test_client()
+
+        for _ in range(MAX_TOKEN_FAILURES):
+            assert client.get("/api/state?token=wrong").status_code == 401
+
+        locked = client.get("/api/state?token=wrong")
+        assert locked.status_code == 429
+        assert int(locked.headers["Retry-After"]) > 0
+
+    def test_lockout_also_blocks_the_correct_token(self, deps: Deps) -> None:
+        """Otherwise an attacker's guessing would not slow them down at all."""
+        deps.token = "s3cret"
+        client = create_app(deps).test_client()
+        for _ in range(MAX_TOKEN_FAILURES):
+            client.get("/api/state?token=wrong")
+
+        assert client.get("/api/state?token=s3cret").status_code == 429
+
+    def test_success_resets_the_counter(self, deps: Deps) -> None:
+        deps.token = "s3cret"
+        client = create_app(deps).test_client()
+
+        for _ in range(MAX_TOKEN_FAILURES - 1):
+            client.get("/api/state?token=wrong")
+        assert client.get("/api/state?token=s3cret").status_code == 200
+
+        # Counter cleared, so the budget starts over rather than tripping now.
+        assert client.get("/api/state?token=wrong").status_code == 401
+
+    def test_lockout_expires(self, deps: Deps) -> None:
+        deps.token = "s3cret"
+        deps.guard = TokenGuard(max_failures=1, lockout_seconds=0)
+        client = create_app(deps).test_client()
+
+        assert client.get("/api/state?token=wrong").status_code == 401
+        assert client.get("/api/state?token=s3cret").status_code == 200
+
+
+class TestTokenPersistence:
+    def test_generated_token_is_reused_after_restart(
+        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
+        monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")
+
+        first = resolve_token(store)
+        second = resolve_token(store)
+
+        assert first and first == second
+
+    def test_env_token_overrides_the_stored_one(
+        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")
+        stored = resolve_token(store)
+        monkeypatch.setenv("RORCH_API_TOKEN", "from-env")
+
+        assert resolve_token(store) == "from-env" != stored
+
+    def test_loopback_bind_needs_no_token(
+        self, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
+        monkeypatch.setenv("RORCH_API_HOST", "127.0.0.1")
+
+        assert resolve_token(store) == ""
+
+    def test_stored_token_is_never_exposed_by_the_api(
+        self, deps: Deps, store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RORCH_API_TOKEN", raising=False)
+        monkeypatch.setenv("RORCH_API_HOST", "0.0.0.0")
+        token = resolve_token(store)
+        deps.token = token
+        client = create_app(deps).test_client()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for path in ("/api/state", "/api/config", "/api/config/export", "/metrics"):
+            assert token not in client.get(path, headers=headers).get_data(as_text=True), path

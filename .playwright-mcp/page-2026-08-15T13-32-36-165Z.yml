@@ -1,0 +1,765 @@
+- generic [active] [ref=f3e1]:
+  - banner [ref=f3e2]:
+    - heading "RORCH" [level=1] [ref=f3e3]
+    - generic [ref=f3e4]: runners 5/16 lifetime 30m github 4771
+    - generic [ref=f3e5]: updated 4:32:36 PM
+    - button "pause all" [ref=f3e6] [cursor=pointer]
+  - main [ref=f3e7]:
+    - generic [ref=f3e8]:
+      - heading "Pools" [level=2] [ref=f3e9]
+      - table [ref=f3e11]:
+        - rowgroup [ref=f3e12]:
+          - row [ref=f3e13]:
+            - columnheader "pool" [ref=f3e14]
+            - columnheader "target" [ref=f3e15]
+            - columnheader "state" [ref=f3e16]
+            - columnheader "containers" [ref=f3e17]
+            - columnheader "online" [ref=f3e18]
+            - columnheader "idle" [ref=f3e19]
+            - columnheader "busy" [ref=f3e20]
+            - columnheader "queued" [ref=f3e21]
+            - columnheader "max" [ref=f3e22]
+            - columnheader "min idle" [ref=f3e23]
+            - columnheader "tick" [ref=f3e24]
+            - columnheader "actions" [ref=f3e25]
+        - rowgroup [ref=f3e26]:
+          - row [ref=f3e27]:
+            - cell [ref=f3e28]:
+              - strong [ref=f3e29]: personal
+            - 'cell "mechemsi [personal: all repos]" [ref=f3e30]'
+            - cell "active" [ref=f3e31]
+            - cell "3" [ref=f3e32]
+            - cell "6" [ref=f3e33]
+            - cell "4" [ref=f3e34]
+            - cell "2" [ref=f3e35]
+            - cell "14" [ref=f3e36]
+            - cell [ref=f3e37]:
+              - textbox [ref=f3e38]: "12"
+            - cell [ref=f3e39]:
+              - textbox [ref=f3e40]: "1"
+            - cell "17.50s · 3s ago" [ref=f3e41]
+            - cell [ref=f3e42]:
+              - button "pause" [ref=f3e43] [cursor=pointer]
+              - button "drain" [ref=f3e44] [cursor=pointer]
+              - button "+1" [ref=f3e45] [cursor=pointer]
+              - button "−1" [ref=f3e46] [cursor=pointer]
+              - button "save" [ref=f3e47] [cursor=pointer]
+              - button "reset" [ref=f3e48] [cursor=pointer]
+          - row [ref=f3e49]:
+            - cell [ref=f3e50]
+            - cell "↳ agentickodeweb" [ref=f3e51]
+            - cell [ref=f3e52]
+            - cell "0" [ref=f3e53]
+            - cell "1" [ref=f3e54]
+            - cell "1" [ref=f3e55]
+            - cell "0" [ref=f3e56]
+            - cell "0" [ref=f3e57]
+            - cell [ref=f3e58]
+            - cell [ref=f3e59]
+            - cell [ref=f3e60]
+            - cell [ref=f3e61]
+          - row [ref=f3e62]:
+            - cell [ref=f3e63]
+            - cell "↳ openbook-core" [ref=f3e64]
+            - cell [ref=f3e65]
+            - cell "3" [ref=f3e66]
+            - cell "5" [ref=f3e67]
+            - cell "3" [ref=f3e68]
+            - cell "2" [ref=f3e69]
+            - cell "0" [ref=f3e70]
+            - cell [ref=f3e71]
+            - cell [ref=f3e72]
+            - cell [ref=f3e73]
+            - cell [ref=f3e74]
+          - row [ref=f3e75]:
+            - cell [ref=f3e76]
+            - cell "↳ shorty-urls" [ref=f3e77]
+            - cell [ref=f3e78]
+            - cell "0" [ref=f3e79]
+            - cell "0" [ref=f3e80]
+            - cell "0" [ref=f3e81]
+            - cell "0" [ref=f3e82]
+            - cell "14" [ref=f3e83]
+            - cell [ref=f3e84]
+            - cell [ref=f3e85]
+            - cell [ref=f3e86]
+            - cell [ref=f3e87]
+          - row [ref=f3e88]:
+            - cell "34 repositories tracked, 3 active" [ref=f3e89]
+          - row [ref=f3e90]:
+            - cell [ref=f3e91]:
+              - strong [ref=f3e92]: smartspend
+            - cell "mechemsi/smartspend" [ref=f3e93]
+            - cell "active" [ref=f3e94]
+            - cell "0" [ref=f3e95]
+            - cell "0" [ref=f3e96]
+            - cell "0" [ref=f3e97]
+            - cell "0" [ref=f3e98]
+            - cell "0" [ref=f3e99]
+            - cell [ref=f3e100]:
+              - textbox [ref=f3e101]: "3"
+            - cell [ref=f3e102]:
+              - textbox [ref=f3e103]: "0"
+            - cell "1.17s · 2m ago" [ref=f3e104]
+            - cell [ref=f3e105]:
+              - button "pause" [ref=f3e106] [cursor=pointer]
+              - button "drain" [ref=f3e107] [cursor=pointer]
+              - button "+1" [ref=f3e108] [cursor=pointer]
+              - button "−1" [ref=f3e109] [cursor=pointer]
+              - button "save" [ref=f3e110] [cursor=pointer]
+              - button "reset" [ref=f3e111] [cursor=pointer]
+          - row [ref=f3e112]:
+            - cell [ref=f3e113]:
+              - strong [ref=f3e114]: pcount
+            - cell "mechemsi/pcount" [ref=f3e115]
+            - cell "active" [ref=f3e116]
+            - cell "0" [ref=f3e117]
+            - cell "0" [ref=f3e118]
+            - cell "0" [ref=f3e119]
+            - cell "0" [ref=f3e120]
+            - cell "0" [ref=f3e121]
+            - cell [ref=f3e122]:
+              - textbox [ref=f3e123]: "3"
+            - cell [ref=f3e124]:
+              - textbox [ref=f3e125]: "0"
+            - cell "1.24s · 2m ago" [ref=f3e126]
+            - cell [ref=f3e127]:
+              - button "pause" [ref=f3e128] [cursor=pointer]
+              - button "drain" [ref=f3e129] [cursor=pointer]
+              - button "+1" [ref=f3e130] [cursor=pointer]
+              - button "−1" [ref=f3e131] [cursor=pointer]
+              - button "save" [ref=f3e132] [cursor=pointer]
+              - button "reset" [ref=f3e133] [cursor=pointer]
+          - row [ref=f3e134]:
+            - cell [ref=f3e135]:
+              - strong [ref=f3e136]: selfhosted-runner-swarm
+            - cell "mechemsi/selfhosted-runner-swarm" [ref=f3e137]
+            - cell "active" [ref=f3e138]
+            - cell "0" [ref=f3e139]
+            - cell "0" [ref=f3e140]
+            - cell "0" [ref=f3e141]
+            - cell "0" [ref=f3e142]
+            - cell "0" [ref=f3e143]
+            - cell [ref=f3e144]:
+              - textbox [ref=f3e145]: "4"
+            - cell [ref=f3e146]:
+              - textbox [ref=f3e147]: "0"
+            - cell "1.26s · 1m ago" [ref=f3e148]
+            - cell [ref=f3e149]:
+              - button "pause" [ref=f3e150] [cursor=pointer]
+              - button "drain" [ref=f3e151] [cursor=pointer]
+              - button "+1" [ref=f3e152] [cursor=pointer]
+              - button "−1" [ref=f3e153] [cursor=pointer]
+              - button "save" [ref=f3e154] [cursor=pointer]
+              - button "reset" [ref=f3e155] [cursor=pointer]
+          - row [ref=f3e156]:
+            - cell [ref=f3e157]:
+              - strong [ref=f3e158]: openbook-core
+            - cell "mechemsi/openbook-core" [ref=f3e159]
+            - cell "active" [ref=f3e160]
+            - cell "2" [ref=f3e161]
+            - cell "3" [ref=f3e162]
+            - cell "1" [ref=f3e163]
+            - cell "2" [ref=f3e164]
+            - cell "0" [ref=f3e165]
+            - cell [ref=f3e166]:
+              - textbox [ref=f3e167]: "5"
+            - cell [ref=f3e168]:
+              - textbox [ref=f3e169]: "0"
+            - cell "3.52s · 1m ago" [ref=f3e170]
+            - cell [ref=f3e171]:
+              - button "pause" [ref=f3e172] [cursor=pointer]
+              - button "drain" [ref=f3e173] [cursor=pointer]
+              - button "+1" [ref=f3e174] [cursor=pointer]
+              - button "−1" [ref=f3e175] [cursor=pointer]
+              - button "save" [ref=f3e176] [cursor=pointer]
+              - button "reset" [ref=f3e177] [cursor=pointer]
+          - row [ref=f3e178]:
+            - cell [ref=f3e179]:
+              - strong [ref=f3e180]: shorty-urls
+            - cell "mechemsi/shorty-urls" [ref=f3e181]
+            - cell "active" [ref=f3e182]
+            - cell "0" [ref=f3e183]
+            - cell "0" [ref=f3e184]
+            - cell "0" [ref=f3e185]
+            - cell "0" [ref=f3e186]
+            - cell "0" [ref=f3e187]
+            - cell [ref=f3e188]:
+              - textbox [ref=f3e189]: "4"
+            - cell [ref=f3e190]:
+              - textbox [ref=f3e191]: "0"
+            - cell "3.18s · 1m ago" [ref=f3e192]
+            - cell [ref=f3e193]:
+              - button "pause" [ref=f3e194] [cursor=pointer]
+              - button "drain" [ref=f3e195] [cursor=pointer]
+              - button "+1" [ref=f3e196] [cursor=pointer]
+              - button "−1" [ref=f3e197] [cursor=pointer]
+              - button "save" [ref=f3e198] [cursor=pointer]
+              - button "reset" [ref=f3e199] [cursor=pointer]
+          - row [ref=f3e200]:
+            - cell [ref=f3e201]:
+              - strong [ref=f3e202]: agentickode
+            - cell "mechemsi/agentickode" [ref=f3e203]
+            - cell "active" [ref=f3e204]
+            - cell "0" [ref=f3e205]
+            - cell "0" [ref=f3e206]
+            - cell "0" [ref=f3e207]
+            - cell "0" [ref=f3e208]
+            - cell "0" [ref=f3e209]
+            - cell [ref=f3e210]:
+              - textbox [ref=f3e211]: "4"
+            - cell [ref=f3e212]:
+              - textbox [ref=f3e213]: "0"
+            - cell "1.21s · 1m ago" [ref=f3e214]
+            - cell [ref=f3e215]:
+              - button "pause" [ref=f3e216] [cursor=pointer]
+              - button "drain" [ref=f3e217] [cursor=pointer]
+              - button "+1" [ref=f3e218] [cursor=pointer]
+              - button "−1" [ref=f3e219] [cursor=pointer]
+              - button "save" [ref=f3e220] [cursor=pointer]
+              - button "reset" [ref=f3e221] [cursor=pointer]
+          - row [ref=f3e222]:
+            - cell [ref=f3e223]:
+              - strong [ref=f3e224]: timetracker
+            - cell "mechemsi/timetracker" [ref=f3e225]
+            - cell "active" [ref=f3e226]
+            - cell "0" [ref=f3e227]
+            - cell "0" [ref=f3e228]
+            - cell "0" [ref=f3e229]
+            - cell "0" [ref=f3e230]
+            - cell "0" [ref=f3e231]
+            - cell [ref=f3e232]:
+              - textbox [ref=f3e233]: "4"
+            - cell [ref=f3e234]:
+              - textbox [ref=f3e235]: "0"
+            - cell "1.69s · 1m ago" [ref=f3e236]
+            - cell [ref=f3e237]:
+              - button "pause" [ref=f3e238] [cursor=pointer]
+              - button "drain" [ref=f3e239] [cursor=pointer]
+              - button "+1" [ref=f3e240] [cursor=pointer]
+              - button "−1" [ref=f3e241] [cursor=pointer]
+              - button "save" [ref=f3e242] [cursor=pointer]
+              - button "reset" [ref=f3e243] [cursor=pointer]
+          - row [ref=f3e244]:
+            - cell [ref=f3e245]:
+              - strong [ref=f3e246]: voiceworld
+            - cell "mechemsi/voiceworld" [ref=f3e247]
+            - cell "active" [ref=f3e248]
+            - cell "0" [ref=f3e249]
+            - cell "0" [ref=f3e250]
+            - cell "0" [ref=f3e251]
+            - cell "0" [ref=f3e252]
+            - cell "0" [ref=f3e253]
+            - cell [ref=f3e254]:
+              - textbox [ref=f3e255]: "4"
+            - cell [ref=f3e256]:
+              - textbox [ref=f3e257]: "0"
+            - cell "1.22s · 1m ago" [ref=f3e258]
+            - cell [ref=f3e259]:
+              - button "pause" [ref=f3e260] [cursor=pointer]
+              - button "drain" [ref=f3e261] [cursor=pointer]
+              - button "+1" [ref=f3e262] [cursor=pointer]
+              - button "−1" [ref=f3e263] [cursor=pointer]
+              - button "save" [ref=f3e264] [cursor=pointer]
+              - button "reset" [ref=f3e265] [cursor=pointer]
+          - row [ref=f3e266]:
+            - cell [ref=f3e267]:
+              - strong [ref=f3e268]: agentickodeweb
+            - cell "mechemsi/agentickodeweb" [ref=f3e269]
+            - cell "active" [ref=f3e270]
+            - cell "0" [ref=f3e271]
+            - cell "1" [ref=f3e272]
+            - cell "1" [ref=f3e273]
+            - cell "0" [ref=f3e274]
+            - cell "0" [ref=f3e275]
+            - cell [ref=f3e276]:
+              - textbox [ref=f3e277]: "4"
+            - cell [ref=f3e278]:
+              - textbox [ref=f3e279]: "0"
+            - cell "1.34s · 1m ago" [ref=f3e280]
+            - cell [ref=f3e281]:
+              - button "pause" [ref=f3e282] [cursor=pointer]
+              - button "drain" [ref=f3e283] [cursor=pointer]
+              - button "+1" [ref=f3e284] [cursor=pointer]
+              - button "−1" [ref=f3e285] [cursor=pointer]
+              - button "save" [ref=f3e286] [cursor=pointer]
+              - button "reset" [ref=f3e287] [cursor=pointer]
+          - row [ref=f3e288]:
+            - cell [ref=f3e289]:
+              - strong [ref=f3e290]: selfhosted-runner-swarm
+            - cell "mechemsi/selfhosted-runner-swarm" [ref=f3e291]
+            - cell "active" [ref=f3e292]
+            - cell "0" [ref=f3e293]
+            - cell "0" [ref=f3e294]
+            - cell "0" [ref=f3e295]
+            - cell "0" [ref=f3e296]
+            - cell "0" [ref=f3e297]
+            - cell [ref=f3e298]:
+              - textbox [ref=f3e299]: "4"
+            - cell [ref=f3e300]:
+              - textbox [ref=f3e301]: "0"
+            - cell "1.26s · 1m ago" [ref=f3e302]
+            - cell [ref=f3e303]:
+              - button "pause" [ref=f3e304] [cursor=pointer]
+              - button "drain" [ref=f3e305] [cursor=pointer]
+              - button "+1" [ref=f3e306] [cursor=pointer]
+              - button "−1" [ref=f3e307] [cursor=pointer]
+              - button "save" [ref=f3e308] [cursor=pointer]
+              - button "reset" [ref=f3e309] [cursor=pointer]
+          - row [ref=f3e310]:
+            - cell [ref=f3e311]:
+              - strong [ref=f3e312]: mission_control_dash
+            - cell "mechemsi/mission_control_dash" [ref=f3e313]
+            - cell "active" [ref=f3e314]
+            - cell "0" [ref=f3e315]
+            - cell "0" [ref=f3e316]
+            - cell "0" [ref=f3e317]
+            - cell "0" [ref=f3e318]
+            - cell "0" [ref=f3e319]
+            - cell [ref=f3e320]:
+              - textbox [ref=f3e321]: "4"
+            - cell [ref=f3e322]:
+              - textbox [ref=f3e323]: "0"
+            - cell "1.22s · 1m ago" [ref=f3e324]
+            - cell [ref=f3e325]:
+              - button "pause" [ref=f3e326] [cursor=pointer]
+              - button "drain" [ref=f3e327] [cursor=pointer]
+              - button "+1" [ref=f3e328] [cursor=pointer]
+              - button "−1" [ref=f3e329] [cursor=pointer]
+              - button "save" [ref=f3e330] [cursor=pointer]
+              - button "reset" [ref=f3e331] [cursor=pointer]
+          - row [ref=f3e332]:
+            - cell [ref=f3e333]:
+              - strong [ref=f3e334]: admin_platform
+            - cell "BlizyDev/admin_platform" [ref=f3e335]
+            - cell "active" [ref=f3e336]
+            - cell "0" [ref=f3e337]
+            - cell "0" [ref=f3e338]
+            - cell "0" [ref=f3e339]
+            - cell "0" [ref=f3e340]
+            - cell "0" [ref=f3e341]
+            - cell [ref=f3e342]:
+              - textbox [ref=f3e343]: "1"
+            - cell [ref=f3e344]:
+              - textbox [ref=f3e345]: "0"
+            - cell "1.21s · 1m ago" [ref=f3e346]
+            - cell [ref=f3e347]:
+              - button "pause" [ref=f3e348] [cursor=pointer]
+              - button "drain" [ref=f3e349] [cursor=pointer]
+              - button "+1" [ref=f3e350] [cursor=pointer]
+              - button "−1" [ref=f3e351] [cursor=pointer]
+              - button "save" [ref=f3e352] [cursor=pointer]
+              - button "reset" [ref=f3e353] [cursor=pointer]
+          - row [ref=f3e354]:
+            - cell [ref=f3e355]:
+              - strong [ref=f3e356]: system_backend
+            - cell "BlizyDev/system_backend" [ref=f3e357]
+            - cell "active" [ref=f3e358]
+            - cell "0" [ref=f3e359]
+            - cell "0" [ref=f3e360]
+            - cell "0" [ref=f3e361]
+            - cell "0" [ref=f3e362]
+            - cell "0" [ref=f3e363]
+            - cell [ref=f3e364]:
+              - textbox [ref=f3e365]: "1"
+            - cell [ref=f3e366]:
+              - textbox [ref=f3e367]: "0"
+            - cell "1.70s · 1m ago" [ref=f3e368]
+            - cell [ref=f3e369]:
+              - button "pause" [ref=f3e370] [cursor=pointer]
+              - button "drain" [ref=f3e371] [cursor=pointer]
+              - button "+1" [ref=f3e372] [cursor=pointer]
+              - button "−1" [ref=f3e373] [cursor=pointer]
+              - button "save" [ref=f3e374] [cursor=pointer]
+              - button "reset" [ref=f3e375] [cursor=pointer]
+          - row [ref=f3e376]:
+            - cell [ref=f3e377]:
+              - strong [ref=f3e378]: conv_agentic_backend
+            - cell "BlizyDev/conv_agentic_backend" [ref=f3e379]
+            - cell "active" [ref=f3e380]
+            - cell "0" [ref=f3e381]
+            - cell "0" [ref=f3e382]
+            - cell "0" [ref=f3e383]
+            - cell "0" [ref=f3e384]
+            - cell "0" [ref=f3e385]
+            - cell [ref=f3e386]:
+              - textbox [ref=f3e387]: "1"
+            - cell [ref=f3e388]:
+              - textbox [ref=f3e389]: "0"
+            - cell "1.68s · 1m ago" [ref=f3e390]
+            - cell [ref=f3e391]:
+              - button "pause" [ref=f3e392] [cursor=pointer]
+              - button "drain" [ref=f3e393] [cursor=pointer]
+              - button "+1" [ref=f3e394] [cursor=pointer]
+              - button "−1" [ref=f3e395] [cursor=pointer]
+              - button "save" [ref=f3e396] [cursor=pointer]
+              - button "reset" [ref=f3e397] [cursor=pointer]
+          - row [ref=f3e398]:
+            - cell [ref=f3e399]:
+              - strong [ref=f3e400]: voicebridge
+            - cell "BlizyDev/voicebridge" [ref=f3e401]
+            - cell "active" [ref=f3e402]
+            - cell "0" [ref=f3e403]
+            - cell "0" [ref=f3e404]
+            - cell "0" [ref=f3e405]
+            - cell "0" [ref=f3e406]
+            - cell "0" [ref=f3e407]
+            - cell [ref=f3e408]:
+              - textbox [ref=f3e409]: "1"
+            - cell [ref=f3e410]:
+              - textbox [ref=f3e411]: "0"
+            - cell "1.72s · 1m ago" [ref=f3e412]
+            - cell [ref=f3e413]:
+              - button "pause" [ref=f3e414] [cursor=pointer]
+              - button "drain" [ref=f3e415] [cursor=pointer]
+              - button "+1" [ref=f3e416] [cursor=pointer]
+              - button "−1" [ref=f3e417] [cursor=pointer]
+              - button "save" [ref=f3e418] [cursor=pointer]
+              - button "reset" [ref=f3e419] [cursor=pointer]
+    - generic [ref=f3e420]:
+      - heading "Runner containers" [level=2] [ref=f3e421]
+      - table [ref=f3e423]:
+        - rowgroup [ref=f3e424]:
+          - row [ref=f3e425]:
+            - columnheader "name" [ref=f3e426]
+            - columnheader "image" [ref=f3e427]
+            - columnheader "age" [ref=f3e428]
+            - columnheader "docker" [ref=f3e429]
+            - columnheader "github" [ref=f3e430]
+            - columnheader "actions" [ref=f3e431]
+        - rowgroup [ref=f3e432]:
+          - row [ref=f3e433]:
+            - cell "gh-runner-personal-openbook-core-8f48c11d" [ref=f3e434]
+            - cell "gh-runner:latest" [ref=f3e435]
+            - cell "About a minute ago" [ref=f3e436]
+            - cell "Up About a minute" [ref=f3e437]
+            - cell "idle" [ref=f3e438]
+            - cell [ref=f3e439]:
+              - button "logs" [ref=f3e440] [cursor=pointer]
+              - button "keep" [ref=f3e441] [cursor=pointer]
+              - button "restart" [ref=f3e442] [cursor=pointer]
+              - button "stop" [ref=f3e443] [cursor=pointer]
+          - row [ref=f3e444]:
+            - cell "gh-runner-personal-openbook-core-f2193732" [ref=f3e445]
+            - cell "gh-runner:latest" [ref=f3e446]
+            - cell "About a minute ago" [ref=f3e447]
+            - cell "Up About a minute" [ref=f3e448]
+            - cell "idle" [ref=f3e449]
+            - cell [ref=f3e450]:
+              - button "logs" [ref=f3e451] [cursor=pointer]
+              - button "keep" [ref=f3e452] [cursor=pointer]
+              - button "restart" [ref=f3e453] [cursor=pointer]
+              - button "stop" [ref=f3e454] [cursor=pointer]
+          - row [ref=f3e455]:
+            - cell "gh-runner-openbook-core-6a827eef" [ref=f3e456]
+            - cell "gh-runner:latest" [ref=f3e457]
+            - cell "4 minutes ago" [ref=f3e458]
+            - cell "Up 4 minutes" [ref=f3e459]
+            - cell "idle" [ref=f3e460]
+            - cell [ref=f3e461]:
+              - button "logs" [ref=f3e462] [cursor=pointer]
+              - button "keep" [ref=f3e463] [cursor=pointer]
+              - button "restart" [ref=f3e464] [cursor=pointer]
+              - button "stop" [ref=f3e465] [cursor=pointer]
+          - row [ref=f3e466]:
+            - cell "gh-runner-openbook-core-fb2fd051 openbook-core · Scheduled audits / audit-outdated" [ref=f3e467]: gh-runner-openbook-core-fb2fd051openbook-core · Scheduled audits / audit-outdated
+            - cell "gh-runner:latest" [ref=f3e468]
+            - cell "4 minutes ago" [ref=f3e469]
+            - cell "Up 4 minutes" [ref=f3e470]
+            - cell "busy" [ref=f3e471]
+            - cell [ref=f3e472]:
+              - button "logs" [ref=f3e473] [cursor=pointer]
+              - button "keep" [ref=f3e474] [cursor=pointer]
+              - button "restart" [ref=f3e475] [cursor=pointer]
+              - button "stop" [ref=f3e476] [cursor=pointer]
+          - row [ref=f3e477]:
+            - cell "gh-runner-personal-openbook-core-9357284c openbook-core · Scheduled audits / audit-deps" [ref=f3e478]: gh-runner-personal-openbook-core-9357284copenbook-core · Scheduled audits / audit-deps
+            - cell "gh-runner:latest" [ref=f3e479]
+            - cell "9 minutes ago" [ref=f3e480]
+            - cell "Up 9 minutes" [ref=f3e481]
+            - cell "busy" [ref=f3e482]
+            - cell [ref=f3e483]:
+              - button "logs" [ref=f3e484] [cursor=pointer]
+              - button "keep" [ref=f3e485] [cursor=pointer]
+              - button "restart" [ref=f3e486] [cursor=pointer]
+              - button "stop" [ref=f3e487] [cursor=pointer]
+    - generic [ref=f3e488]:
+      - heading "Jobs — what runners actually ran" [level=2] [ref=f3e489]
+      - table [ref=f3e491]:
+        - rowgroup [ref=f3e492]:
+          - row [ref=f3e493]:
+            - columnheader "when" [ref=f3e494]
+            - columnheader "repo" [ref=f3e495]
+            - columnheader "workflow / job" [ref=f3e496]
+            - columnheader "runner" [ref=f3e497]
+            - columnheader "result" [ref=f3e498]
+        - rowgroup [ref=f3e499]:
+          - row [ref=f3e500]:
+            - cell "7s ago" [ref=f3e501]
+            - cell "shorty-urls" [ref=f3e502]
+            - cell [ref=f3e503]:
+              - link [ref=f3e504] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31887429248/job/95018667064
+                - text: CI /
+                - strong [ref=f3e505]: pr-size
+            - cell "—" [ref=f3e506]
+            - cell "skipped 1s" [ref=f3e507]
+          - row [ref=f3e508]:
+            - cell "7s ago" [ref=f3e509]
+            - cell "shorty-urls" [ref=f3e510]
+            - cell [ref=f3e511]:
+              - link [ref=f3e512] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31887429248/job/95018666889
+                - text: CI /
+                - strong [ref=f3e513]: pr-title-lint
+            - cell "—" [ref=f3e514]
+            - cell "skipped 1s" [ref=f3e515]
+          - row [ref=f3e516]:
+            - cell "1m ago" [ref=f3e517]
+            - cell "openbook-core" [ref=f3e518]
+            - cell [ref=f3e519]:
+              - link [ref=f3e520] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/openbook-core/actions/runs/31887407171/job/95018622110
+                - text: Scheduled audits /
+                - strong [ref=f3e521]: audit-outdated
+            - cell "gh-runner-openbook-core-fb2fd051" [ref=f3e522]
+            - cell "running" [ref=f3e523]
+          - row [ref=f3e524]:
+            - cell "2m ago" [ref=f3e525]
+            - cell "openbook-core" [ref=f3e526]
+            - cell [ref=f3e527]:
+              - link [ref=f3e528] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/openbook-core/actions/runs/31887407171/job/95018622136
+                - text: Scheduled audits /
+                - strong [ref=f3e529]: audit-deps
+            - cell "gh-runner-personal-openbook-core-9357284c" [ref=f3e530]
+            - cell "running" [ref=f3e531]
+          - row [ref=f3e532]:
+            - cell "2m ago" [ref=f3e533]
+            - cell "shorty-urls" [ref=f3e534]
+            - cell [ref=f3e535]:
+              - link [ref=f3e536] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95018584212
+                - text: CI /
+                - strong [ref=f3e537]: frontend / Visual Regression Testing
+            - cell "—" [ref=f3e538]
+            - cell "skipped 1s" [ref=f3e539]
+          - row [ref=f3e540]:
+            - cell "2m ago" [ref=f3e541]
+            - cell "shorty-urls" [ref=f3e542]
+            - cell [ref=f3e543]:
+              - link [ref=f3e544] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95018584058
+                - text: CI /
+                - strong [ref=f3e545]: frontend / Playwright E2E Tests
+            - cell "—" [ref=f3e546]
+            - cell "skipped 1s" [ref=f3e547]
+          - row [ref=f3e548]:
+            - cell "2m ago" [ref=f3e549]
+            - cell "shorty-urls" [ref=f3e550]
+            - cell [ref=f3e551]:
+              - link [ref=f3e552] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95018584010
+                - text: CI /
+                - strong [ref=f3e553]: ci-required
+            - cell "gh-runner-personal-shorty-urls-95abbfc3" [ref=f3e554]
+            - cell "unobserved 96s" [ref=f3e555]
+          - row [ref=f3e556]:
+            - cell "2m ago" [ref=f3e557]
+            - cell "shorty-urls" [ref=f3e558]
+            - cell [ref=f3e559]:
+              - link [ref=f3e560] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95017952784
+                - text: CI /
+                - strong [ref=f3e561]: backend
+            - cell "—" [ref=f3e562]
+            - cell "skipped 1s" [ref=f3e563]
+          - row [ref=f3e564]:
+            - cell "2m ago" [ref=f3e565]
+            - cell "shorty-urls" [ref=f3e566]
+            - cell [ref=f3e567]:
+              - link [ref=f3e568] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95017952761
+                - text: CI /
+                - strong [ref=f3e569]: protobuf
+            - cell "—" [ref=f3e570]
+            - cell "skipped 1s" [ref=f3e571]
+          - row [ref=f3e572]:
+            - cell "2m ago" [ref=f3e573]
+            - cell "shorty-urls" [ref=f3e574]
+            - cell [ref=f3e575]:
+              - link [ref=f3e576] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95017952570
+                - text: CI /
+                - strong [ref=f3e577]: hadolint
+            - cell "—" [ref=f3e578]
+            - cell "skipped 1s" [ref=f3e579]
+          - row [ref=f3e580]:
+            - cell "2m ago" [ref=f3e581]
+            - cell "shorty-urls" [ref=f3e582]
+            - cell [ref=f3e583]:
+              - link [ref=f3e584] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95017952515
+                - text: CI /
+                - strong [ref=f3e585]: migrate-check
+            - cell "—" [ref=f3e586]
+            - cell "skipped 1s" [ref=f3e587]
+          - row [ref=f3e588]:
+            - cell "2m ago" [ref=f3e589]
+            - cell "shorty-urls" [ref=f3e590]
+            - cell [ref=f3e591]:
+              - link [ref=f3e592] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95017952255
+                - text: CI /
+                - strong [ref=f3e593]: frontend / Frontend Linting & Type Checking
+            - cell "gh-runner-shorty-urls-28bb262a" [ref=f3e594]
+            - cell "success 1s" [ref=f3e595]
+          - row [ref=f3e596]:
+            - cell "2m ago" [ref=f3e597]
+            - cell "shorty-urls" [ref=f3e598]
+            - cell [ref=f3e599]:
+              - link [ref=f3e600] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860543
+                - text: CI /
+                - strong [ref=f3e601]: sca-php
+            - cell "gh-runner-shorty-urls-8402a391" [ref=f3e602]
+            - cell "success 1s" [ref=f3e603]
+          - row [ref=f3e604]:
+            - cell "2m ago" [ref=f3e605]
+            - cell "shorty-urls" [ref=f3e606]
+            - cell [ref=f3e607]:
+              - link [ref=f3e608] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860072
+                - text: CI /
+                - strong [ref=f3e609]: pr-size
+            - cell "gh-runner-shorty-urls-272e281a" [ref=f3e610]
+            - cell "success 1s" [ref=f3e611]
+          - row [ref=f3e612]:
+            - cell "2m ago" [ref=f3e613]
+            - cell "shorty-urls" [ref=f3e614]
+            - cell [ref=f3e615]:
+              - link [ref=f3e616] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860067
+                - text: CI /
+                - strong [ref=f3e617]: changes
+            - cell "gh-runner-shorty-urls-159f8c24" [ref=f3e618]
+            - cell "success 1s" [ref=f3e619]
+          - row [ref=f3e620]:
+            - cell "2m ago" [ref=f3e621]
+            - cell "shorty-urls" [ref=f3e622]
+            - cell [ref=f3e623]:
+              - link [ref=f3e624] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860059
+                - text: CI /
+                - strong [ref=f3e625]: public-env-guard
+            - cell "gh-runner-personal-shorty-urls-4af4a78f" [ref=f3e626]
+            - cell "success 1s" [ref=f3e627]
+          - row [ref=f3e628]:
+            - cell "2m ago" [ref=f3e629]
+            - cell "shorty-urls" [ref=f3e630]
+            - cell [ref=f3e631]:
+              - link [ref=f3e632] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860055
+                - text: CI /
+                - strong [ref=f3e633]: workflow-lint
+            - cell "gh-runner-personal-shorty-urls-dece33d3" [ref=f3e634]
+            - cell "success 1s" [ref=f3e635]
+          - row [ref=f3e636]:
+            - cell "2m ago" [ref=f3e637]
+            - cell "shorty-urls" [ref=f3e638]
+            - cell [ref=f3e639]:
+              - link [ref=f3e640] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860047
+                - text: CI /
+                - strong [ref=f3e641]: pr-title-lint
+            - cell "gh-runner-personal-shorty-urls-8fbc4e71" [ref=f3e642]
+            - cell "success 1s" [ref=f3e643]
+          - row [ref=f3e644]:
+            - cell "2m ago" [ref=f3e645]
+            - cell "shorty-urls" [ref=f3e646]
+            - cell [ref=f3e647]:
+              - link [ref=f3e648] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016860001
+                - text: CI /
+                - strong [ref=f3e649]: secret-scan
+            - cell "gh-runner-personal-shorty-urls-e5004792" [ref=f3e650]
+            - cell "success 1s" [ref=f3e651]
+          - row [ref=f3e652]:
+            - cell "2m ago" [ref=f3e653]
+            - cell "shorty-urls" [ref=f3e654]
+            - cell [ref=f3e655]:
+              - link [ref=f3e656] [cursor=pointer]:
+                - /url: https://github.com/mechemsi/shorty-urls/actions/runs/31886666376/job/95016859988
+                - text: CI /
+                - strong [ref=f3e657]: sca-npm
+            - cell "gh-runner-personal-shorty-urls-08a6d66b" [ref=f3e658]
+            - cell "success 1s" [ref=f3e659]
+    - generic [ref=f3e660]:
+      - heading "History · last 6h" [level=2] [ref=f3e661]
+      - generic [ref=f3e662]:
+        - figure "queued jobs" [ref=f3e663]:
+          - generic [ref=f3e667]: peak 14
+        - figure "runner containers" [ref=f3e668]:
+          - generic [ref=f3e672]: peak 4
+        - figure "busy runners" [ref=f3e673]:
+          - generic [ref=f3e677]: peak 5
+        - figure "events (6h)" [ref=f3e678]:
+          - generic [ref=f3e680]:
+            - text: exit
+            - strong [ref=f3e681]: "5"
+          - generic [ref=f3e682]:
+            - text: spawn
+            - strong [ref=f3e683]: "2"
+    - generic [ref=f3e684]:
+      - heading "Events" [level=2] [ref=f3e685]
+      - table [ref=f3e687]:
+        - rowgroup [ref=f3e688]:
+          - row [ref=f3e689]:
+            - columnheader "when" [ref=f3e690]
+            - columnheader "event" [ref=f3e691]
+            - columnheader "pool" [ref=f3e692]
+            - columnheader "container" [ref=f3e693]
+            - columnheader "reason" [ref=f3e694]
+        - rowgroup [ref=f3e695]:
+          - row [ref=f3e696]:
+            - cell "23s ago" [ref=f3e697]
+            - cell "exit" [ref=f3e698]
+            - cell "personal-shorty-urls" [ref=f3e699]
+            - cell "gh-runner-personal-shorty-urls-95abbfc3" [ref=f3e700]
+            - cell "Exited (0) About a minute ago" [ref=f3e701]
+          - row [ref=f3e702]:
+            - cell "1m ago" [ref=f3e703]
+            - cell "exit" [ref=f3e704]
+            - cell "shorty-urls" [ref=f3e705]
+            - cell "gh-runner-shorty-urls-28bb262a" [ref=f3e706]
+            - cell "Exited (0) 29 seconds ago" [ref=f3e707]
+          - row [ref=f3e708]:
+            - cell "1m ago" [ref=f3e709]
+            - cell "exit" [ref=f3e710]
+            - cell "openbook-core" [ref=f3e711]
+            - cell "gh-runner-openbook-core-27618d62" [ref=f3e712]
+            - cell "Exited (0) 55 seconds ago" [ref=f3e713]
+          - row [ref=f3e714]:
+            - cell "2m ago" [ref=f3e715]
+            - cell "spawn" [ref=f3e716]
+            - cell "personal-openbook-core" [ref=f3e717]
+            - cell "gh-runner-personal-openbook-core-f2193732" [ref=f3e718]
+            - cell "mechemsi/openbook-core" [ref=f3e719]
+          - row [ref=f3e720]:
+            - cell "2m ago" [ref=f3e721]
+            - cell "spawn" [ref=f3e722]
+            - cell "personal-openbook-core" [ref=f3e723]
+            - cell "gh-runner-personal-openbook-core-8f48c11d" [ref=f3e724]
+            - cell "mechemsi/openbook-core" [ref=f3e725]
+          - row [ref=f3e726]:
+            - cell "2m ago" [ref=f3e727]
+            - cell "exit" [ref=f3e728]
+            - cell "personal-openbook-core" [ref=f3e729]
+            - cell "gh-runner-personal-openbook-core-fefd4422" [ref=f3e730]
+            - cell "Exited (0) 27 seconds ago" [ref=f3e731]
+          - row [ref=f3e732]:
+            - cell "2m ago" [ref=f3e733]
+            - cell "exit" [ref=f3e734]
+            - cell "personal-openbook-core" [ref=f3e735]
+            - cell "gh-runner-personal-openbook-core-086040e3" [ref=f3e736]
+            - cell "Exited (0) 52 seconds ago" [ref=f3e737]
