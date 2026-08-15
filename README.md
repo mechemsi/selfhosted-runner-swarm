@@ -125,6 +125,12 @@ Authenticate with `Authorization: Bearer $RORCH_API_TOKEN`.
 Send `Idempotency-Key: <uuid>` on any POST; a retry with the same key replays the first
 response instead of provisioning a second runner.
 
+**Token scopes.** `RORCH_API_TOKEN` grants everything. `RORCH_API_READONLY_TOKEN` grants
+every `GET` but returns `403` on any control action or config change, so a dashboard can be
+shared without handing over container control. After 10 bad tokens a client IP is locked out
+for 5 minutes with `429` + `Retry-After` — the token is the only credential, so unlimited
+guessing would be the whole attack.
+
 PATs are never stored in the database and never appear in any response.
 
 ### config.yml stays the default
@@ -153,7 +159,8 @@ secrets stay in `.env`.
 | `GITHUB_RATE_LIMIT_RESERVE` | `100` | Stop before consuming the final PAT requests |
 | `REPO_CHECK_WORKERS` | `6` | Maximum repositories inspected concurrently |
 | `RUNNER_OPERATION_WORKERS` | `4` | Maximum concurrent runner removals and provisions |
-| `RORCH_API_TOKEN` | generated | Dashboard/API bearer token (`make setup` writes one) |
+| `RORCH_API_TOKEN` | generated | Dashboard/API control token. If unset while bound off-loopback, one is generated **and stored**, so it survives restarts |
+| `RORCH_API_READONLY_TOKEN` | — | Optional token: every read endpoint, no control actions |
 | `RORCH_API_PORT` | `8080` | Dashboard port, published on `127.0.0.1` |
 | `HISTORY_RETENTION_DAYS` | `14` | Days of dashboard history kept (`0` disables pruning) |
 | `RORCH_DB` | — | Set to `off` to run without the store and dashboard |

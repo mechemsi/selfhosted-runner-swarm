@@ -239,8 +239,29 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
     return errors
 
 
+def validation_warnings(pools: list[PoolConfig]) -> list[str]:
+    """Configurations that work but are almost certainly a mistake.
+
+    Deliberately separate from `validation_errors`: these must never stop a
+    running deployment from starting, only make the problem visible.
+    """
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for p in pools:
+        if p.name in seen:
+            warnings.append(
+                f"Pool '{p.name}' is defined more than once. Both copies share the container "
+                f"prefix '{p.container_prefix}', so they scale the same runners, double the "
+                f"GitHub API calls for {p.display}, and share one row of dashboard state."
+            )
+        seen.add(p.name)
+    return warnings
+
+
 def validate_pools(pools: list[PoolConfig]) -> None:
     """Validate pool configurations. Exits on failure."""
+    for message in validation_warnings(pools):
+        log.warning("%s", message)
     errors = validation_errors(pools)
     for message in errors:
         log.error("%s", message)
