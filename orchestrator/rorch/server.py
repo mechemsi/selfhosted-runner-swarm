@@ -26,6 +26,7 @@ import yaml
 from flask import Flask, Response, current_app, jsonify, make_response, request
 
 from rorch.config import PoolConfig, validation_errors
+from rorch.docker_client import ORCHESTRATOR_CONTAINER
 from rorch.protocols import ContainerManager
 from rorch.resolver import (
     GLOBAL_KEYS,
@@ -186,7 +187,7 @@ def create_app(deps: Deps) -> Flask:
     def container_logs(name: str) -> Response:
         if not _is_runner_container(name):
             return jsonify(error="not a runner container"), 400  # type: ignore[return-value]
-        text = deps.docker.container_logs(name, tail=_limit(500))
+        text = deps.docker.container_logs(name, tail=_limit(500, param="tail"))
         response = make_response(text)
         response.mimetype = "text/plain"
         return response
@@ -420,17 +421,15 @@ def create_app(deps: Deps) -> Flask:
 # ── helpers ────────────────────────────────────────────────────────────────
 
 
-def _limit(default: int) -> int:
+def _limit(default: int, param: str = "limit") -> int:
     try:
-        return max(1, min(int(request.args.get("limit", default)), 5000))
+        return max(1, min(int(request.args.get(param, default)), 5000))
     except (TypeError, ValueError):
         return default
 
 
 def _is_runner_container(name: str) -> bool:
     """Refuse to operate on anything outside the runner namespace."""
-    from rorch.docker_client import ORCHESTRATOR_CONTAINER
-
     return (
         name.startswith(f"{GLOBAL_CONTAINER_PREFIX}-")
         and name != ORCHESTRATOR_CONTAINER
@@ -539,14 +538,14 @@ def _state_payload(deps: Deps) -> dict[str, Any]:
                 "github": status.get(info.name, {}),
             }
             for info in containers
-            if info.name != "gh-runner-orchestrator"
+            if info.name != ORCHESTRATOR_CONTAINER
         ],
         "globals": {
             "max_total_runners": effective.max_total_runners,
             "max_runner_lifetime": effective.max_runner_lifetime,
             "paused": effective.paused,
             "total_containers": sum(
-                1 for info in containers if info.name != "gh-runner-orchestrator"
+                1 for info in containers if info.name != ORCHESTRATOR_CONTAINER
             ),
         },
         "rate_limit": deps.rate_limit_status(),

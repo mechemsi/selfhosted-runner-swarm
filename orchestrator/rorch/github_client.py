@@ -58,6 +58,9 @@ class GitHubClient:
         self._last_mutation_at = 0.0
         self._last_remaining: int | None = None
         self._last_reset_at: float | None = None
+        # Highest retry_at across tokens, so the dashboard can report a
+        # cooldown without iterating _blocked_until while a request mutates it.
+        self._blocked_until_any = 0.0
 
     def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
         token_key = hashlib.sha256(pat.encode()).digest()
@@ -130,15 +133,20 @@ class GitHubClient:
         self._last_mutation_at = self._wall_clock()
 
     def rate_limit_status(self) -> dict[str, Any]:
-        """Last-seen API budget, for the dashboard. Read-only, no API call."""
-        with self._request_lock:
-            blocked_until = max(self._blocked_until.values(), default=0.0)
-            return {
-                "remaining": self._last_remaining,
-                "reset_at": self._last_reset_at,
-                "reserve": self._rate_limit_reserve,
-                "blocked_until": blocked_until if blocked_until > self._wall_clock() else 0.0,
-            }
+        """Last-seen API budget, for the dashboard. Read-only, makes no API call.
+
+        Deliberately lock-free: `_request_lock` is held for the duration of each
+        GitHub call, so taking it here would stall a dashboard refresh behind a
+        10s API timeout. These are plain attribute reads of values written under
+        that lock, so the worst case is a status one tick stale.
+        """
+        blocked_until = self._blocked_until_any
+        return {
+            "remaining": self._last_remaining,
+            "reset_at": self._last_reset_at,
+            "reserve": self._rate_limit_reserve,
+            "blocked_until": blocked_until if blocked_until > self._wall_clock() else 0.0,
+        }
 
     def _update_rate_limit(self, token_key: bytes, headers: Any) -> None:
         remaining = self._parse_int_header(headers, "X-RateLimit-Remaining")
@@ -199,6 +207,7 @@ class GitHubClient:
     def _block_token(self, token_key: bytes, retry_at: float, reason: str) -> None:
         previous = self._blocked_until.get(token_key, 0.0)
         self._blocked_until[token_key] = max(previous, retry_at)
+        self._blocked_until_any = max(self._blocked_until_any, retry_at)
         if retry_at > previous:
             wait_seconds = max(1, int(retry_at - self._wall_clock()))
             log.warning("%s; pausing GitHub requests for %ds", reason, wait_seconds)
