@@ -218,7 +218,14 @@ jobs:
   docker-build-scan:
     name: docker-build-scan
     needs: [changes, lint, test-unit, docker-lint]
-    if: needs.changes.outputs.docker == 'true'
+    # A runner-image-only PR leaves `python` false, so lint and test-unit are
+    # skipped — and a job needing a skipped job is skipped too by default. That
+    # would silently drop build validation from exactly the PRs it exists for.
+    # !cancelled() opts out of that; !contains(...'failure') keeps the gate.
+    if: >-
+      ${{ !cancelled()
+          && !contains(needs.*.result, 'failure')
+          && needs.changes.outputs.docker == 'true' }}
     runs-on: ${{ vars.SELF_HOSTED_BUILDS == 'true' && 'self-hosted' || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
