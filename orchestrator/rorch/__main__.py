@@ -38,7 +38,7 @@ def main() -> None:
     max_runner_lifetime = load_max_runner_lifetime()
     retention_days = int(os.environ.get("HISTORY_RETENTION_DAYS", "14"))
 
-    store = None if os.environ.get("RORCH_DB", "").lower() == "off" else open_store(_db_path())
+    store = None if os.environ.get("RORCH_DB", "").lower() == "off" else open_store(_db_url())
     resolver = ConfigResolver(pools, max_total_runners, max_runner_lifetime, store)
 
     rate_limit_reserve = max(0, int(os.environ.get("GITHUB_RATE_LIMIT_RESERVE", "100")))
@@ -138,8 +138,16 @@ def main() -> None:
         time.sleep(poll)
 
 
-def _db_path() -> str:
-    """Database location, falling back to the working directory outside Docker."""
+def _db_url() -> str:
+    """Where state lives: a MariaDB URL, or a SQLite file path.
+
+    RORCH_DB_URL wins (e.g. mysql://rorch:pw@mariadb:3306/rorch). Otherwise the
+    historical SQLite path is used, so an existing install keeps working
+    untouched after an upgrade.
+    """
+    url = os.environ.get("RORCH_DB_URL", "").strip()
+    if url:
+        return url
     configured = os.environ.get("RORCH_DB_PATH")
     if configured:
         return configured

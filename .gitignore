@@ -7,3 +7,5 @@ __pycache__/
 *.egg-info/
 .coverage
 .pytest_cache/
+# Playwright MCP scratch output
+.playwright-mcp/

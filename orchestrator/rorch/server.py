@@ -37,7 +37,7 @@ from rorch.resolver import (
     unknown_fields,
 )
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX
-from rorch.store import SqliteStore
+from rorch.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class Deps:
 
     def __init__(
         self,
-        store: SqliteStore,
+        store: Store,
         resolver: ConfigResolver,
         docker: ContainerManager,
         rate_limit_status: Callable[[], dict[str, Any]] | None = None,
@@ -786,7 +786,7 @@ def start(deps: Deps, host: str, port: int) -> threading.Thread | None:
     return thread
 
 
-def resolve_token(store: SqliteStore | None = None) -> str:
+def resolve_token(store: Store | None = None) -> str:
     """Token from the environment, generating and persisting one if needed.
 
     A generated token used to be regenerated on every start, so an operator had

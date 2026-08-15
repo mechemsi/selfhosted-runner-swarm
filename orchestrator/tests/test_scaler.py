@@ -14,7 +14,7 @@ from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.protocols import JobInfo, RunnerInfo
 from rorch.scaler import PoolScaler
-from rorch.store import EVENT_DEREGISTER, PoolState, SqliteStore
+from rorch.store import EVENT_DEREGISTER, PoolState, Store
 
 
 def _online_runners(idle: int = 0, busy: int = 0) -> list[RunnerInfo]:
@@ -508,7 +508,7 @@ class TestStoreRecording:
         pool: PoolConfig,
         tmp_path: Path,
     ) -> None:
-        store = SqliteStore(str(tmp_path / "rorch.db"))
+        store = Store(str(tmp_path / "rorch.db"))
         mock_github.get_queued_count.return_value = 2
         mock_github.list_runners.return_value = [
             RunnerInfo(id=1, name="gh-runner-test-pool-abc", status="online", busy=True)
@@ -529,7 +529,7 @@ class TestStoreRecording:
         pool: PoolConfig,
         tmp_path: Path,
     ) -> None:
-        store = SqliteStore(str(tmp_path / "rorch.db"))
+        store = Store(str(tmp_path / "rorch.db"))
         mock_github.list_runners.return_value = [
             RunnerInfo(id=7, name="gh-runner-test-pool-dead", status="offline", busy=False)
         ]

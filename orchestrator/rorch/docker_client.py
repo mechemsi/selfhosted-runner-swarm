@@ -25,7 +25,7 @@ from rorch.store import (
     EVENT_SPAWN,
     EVENT_SPAWN_FAILED,
     EVENT_STUCK_KILL,
-    SqliteStore,
+    Store,
 )
 
 log = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ def _parse_running_minutes(running_for: str) -> float | None:
 class DockerClient:
     """Manages runner container lifecycle via Docker CLI."""
 
-    def __init__(self, store: SqliteStore | None = None) -> None:
+    def __init__(self, store: Store | None = None) -> None:
         self._build_lock = threading.Lock()
         self._build_retry_at: dict[str, float] = {}
         self._store = store

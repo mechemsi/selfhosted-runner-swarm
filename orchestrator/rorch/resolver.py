@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from rorch.config import PoolConfig, validation_errors
-from rorch.store import PoolState, SqliteStore
+from rorch.store import PoolState, Store
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ class ConfigResolver:
         base_pools: list[PoolConfig],
         base_max_total_runners: int,
         base_max_runner_lifetime: int,
-        store: SqliteStore | None = None,
+        store: Store | None = None,
     ) -> None:
         self._base_pools = list(base_pools)
         self._base_max_total = base_max_total_runners

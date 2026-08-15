@@ -9,16 +9,16 @@ import pytest
 
 from rorch.config import PoolConfig
 from rorch.resolver import ConfigResolver, pool_to_dict
-from rorch.store import SqliteStore
+from rorch.store import Store
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> SqliteStore:
-    return SqliteStore(str(tmp_path / "rorch.db"))
+def store(tmp_path: Path) -> Store:
+    return Store(str(tmp_path / "rorch.db"))
 
 
 @pytest.fixture
-def resolver(pool: PoolConfig, store: SqliteStore) -> ConfigResolver:
+def resolver(pool: PoolConfig, store: Store) -> ConfigResolver:
     return ConfigResolver(
         [pool], base_max_total_runners=10, base_max_runner_lifetime=0, store=store
     )
@@ -43,7 +43,7 @@ class TestOverrides:
         assert effective.max_total_runners == 10
 
     def test_override_replaces_single_field(
-        self, resolver: ConfigResolver, store: SqliteStore, pool: PoolConfig
+        self, resolver: ConfigResolver, store: Store, pool: PoolConfig
     ) -> None:
         store.set_pool_override(pool.name, {"max_runners": 42})
         resolved = resolver.resolve().pools[0]
@@ -54,14 +54,14 @@ class TestOverrides:
         assert resolved.owner == pool.owner
 
     def test_deleting_override_reverts_to_yaml(
-        self, resolver: ConfigResolver, store: SqliteStore, pool: PoolConfig
+        self, resolver: ConfigResolver, store: Store, pool: PoolConfig
     ) -> None:
         store.set_pool_override(pool.name, {"max_runners": 42})
         store.delete_pool_override(pool.name)
         assert resolver.resolve().pools[0].max_runners == pool.max_runners
 
     def test_identity_fields_are_never_overridable(
-        self, resolver: ConfigResolver, store: SqliteStore, pool: PoolConfig
+        self, resolver: ConfigResolver, store: Store, pool: PoolConfig
     ) -> None:
         store.set_pool_override(pool.name, {"owner": "attacker", "pat": "leaked"})
         resolved = resolver.resolve().pools[0]
@@ -70,13 +70,13 @@ class TestOverrides:
         assert resolved.pat == pool.pat
 
     def test_disabled_pool_is_dropped(
-        self, resolver: ConfigResolver, store: SqliteStore, pool: PoolConfig
+        self, resolver: ConfigResolver, store: Store, pool: PoolConfig
     ) -> None:
         store.set_pool_override(pool.name, {}, disabled=True)
         assert resolver.resolve().pools == []
 
     def test_string_values_are_coerced(
-        self, resolver: ConfigResolver, store: SqliteStore, pool: PoolConfig
+        self, resolver: ConfigResolver, store: Store, pool: PoolConfig
     ) -> None:
         store.set_pool_override(pool.name, {"max_runners": "8", "cpu_limit": "1.5"})
         resolved = resolver.resolve().pools[0]
@@ -86,7 +86,7 @@ class TestOverrides:
 
 
 class TestGlobals:
-    def test_global_override_applies(self, resolver: ConfigResolver, store: SqliteStore) -> None:
+    def test_global_override_applies(self, resolver: ConfigResolver, store: Store) -> None:
         store.set_global("max_total_runners", "3")
         store.set_global("max_runner_lifetime", "120")
         effective = resolver.resolve()
@@ -94,12 +94,12 @@ class TestGlobals:
         assert effective.max_total_runners == 3
         assert effective.max_runner_lifetime == 120
 
-    def test_paused_flag(self, resolver: ConfigResolver, store: SqliteStore) -> None:
+    def test_paused_flag(self, resolver: ConfigResolver, store: Store) -> None:
         store.set_global("paused", "1")
         assert resolver.resolve().paused is True
 
     def test_unparseable_global_falls_back_to_yaml(
-        self, resolver: ConfigResolver, store: SqliteStore
+        self, resolver: ConfigResolver, store: Store
     ) -> None:
         store.set_global("max_total_runners", "not-a-number")
         assert resolver.resolve().max_total_runners == 10
@@ -109,7 +109,7 @@ class TestUiCreatedPools:
     def test_pool_from_database_uses_env_pat(
         self,
         resolver: ConfigResolver,
-        store: SqliteStore,
+        store: Store,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EXTRA_PAT", "ghp_from_environment")
@@ -127,7 +127,7 @@ class TestUiCreatedPools:
     def test_pool_skipped_when_pat_env_missing(
         self,
         resolver: ConfigResolver,
-        store: SqliteStore,
+        store: Store,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("MISSING_PAT", raising=False)
@@ -137,7 +137,7 @@ class TestUiCreatedPools:
     def test_invalid_pool_definition_is_skipped(
         self,
         resolver: ConfigResolver,
-        store: SqliteStore,
+        store: Store,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EXTRA_PAT", "ghp_from_environment")
