@@ -3,7 +3,10 @@
 
 """Tests for configuration loading and validation."""
 
+import os
 import textwrap
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +16,7 @@ from rorch.config import (
     load_max_total_runners,
     resolve_env,
     validate_pools,
+    validation_errors,
 )
 
 
@@ -249,3 +253,44 @@ class TestMaxTotalRunners:
         config_path.write_text("max_total_runners: -1\npools: []\n")
         with pytest.raises(SystemExit):
             load_max_total_runners(str(config_path))
+
+
+class TestNetworkMode:
+    def test_defaults_to_host(self, pool: PoolConfig) -> None:
+        """Historical behaviour: runners share the host network namespace."""
+        assert pool.network_mode == "host"
+
+    def test_read_from_yaml_defaults_and_overridden_per_pool(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "defaults:\n"
+            "  network_mode: bridge\n"
+            "pools:\n"
+            "  - name: inherits\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "  - name: overrides\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "    network_mode: HOST\n"
+        )
+        pools = {p.name: p for p in load_config(str(config))}
+
+        assert pools["inherits"].network_mode == "bridge"
+        assert pools["overrides"].network_mode == "host"  # normalised to lower case
+
+    def test_rejected_when_not_host_or_bridge(self, pool: PoolConfig) -> None:
+        errors = validation_errors([replace(pool, network_mode="macvlan")])
+        assert any("network_mode" in message for message in errors)
+
+
+class TestShippedExampleConfig:
+    def test_example_config_still_loads_and_validates(self) -> None:
+        """example.config.yml is what `make setup` copies — it must stay usable."""
+        example = Path(__file__).resolve().parents[2] / "example.config.yml"
+        os.environ.setdefault("GITHUB_PAT", "ghp_example_token_for_tests")
+
+        pools = load_config(str(example))
+
+        assert pools, "example.config.yml defines no pools"
+        assert validation_errors(pools) == []
