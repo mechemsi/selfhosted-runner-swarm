@@ -315,6 +315,19 @@ class GitHubClient:
             )
         return sorted(repositories)
 
+    def is_public_repo(self, pool: PoolConfig) -> bool | None:
+        """Whether a repo-level pool points at a public repository.
+
+        None when it cannot be determined (API error), so callers can stay
+        quiet rather than warn on a transient failure.
+        """
+        if not pool.repo:
+            return None
+        data = self._get(pool.pat, f"/repos/{pool.owner}/{pool.repo}")
+        if not isinstance(data, dict) or "private" not in data:
+            return None
+        return not data["private"]
+
     def get_queued_jobs_for_repo(
         self,
         pat: str,

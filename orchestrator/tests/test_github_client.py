@@ -247,3 +247,28 @@ class TestRepositoryDiscoveryFilters:
         found = self._discover(pool, monkeypatch)
         assert "archived" not in found
         assert "someone-else" not in found
+
+
+class TestPublicRepoDetection:
+    def _client(self, payload: object, monkeypatch: pytest.MonkeyPatch) -> GitHubClient:
+        client = GitHubClient()
+        monkeypatch.setattr(client, "_get", lambda pat, path: payload)
+        return client
+
+    def test_public_repo_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", repo="docs")
+        assert self._client({"private": False}, monkeypatch).is_public_repo(pool) is True
+
+    def test_private_repo_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", repo="api")
+        assert self._client({"private": True}, monkeypatch).is_public_repo(pool) is False
+
+    def test_discovery_pool_is_not_applicable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", scope="personal")
+        assert self._client({"private": False}, monkeypatch).is_public_repo(pool) is None
+
+    def test_api_failure_is_inconclusive_not_a_false_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", repo="api")
+        assert self._client(None, monkeypatch).is_public_repo(pool) is None
