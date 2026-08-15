@@ -17,7 +17,7 @@ from typing import Any
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
-from rorch.protocols import RunnerInfo
+from rorch.protocols import JobInfo, RunnerInfo
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,24 @@ class ConditionalResponse:
 
     etag: str
     data: Any
+
+
+def _job_info(job: dict[str, Any], run: dict[str, Any], repo: str) -> JobInfo:
+    """Map one GitHub jobs-API entry onto JobInfo."""
+    return JobInfo(
+        job_id=int(job.get("id", 0)),
+        repo=repo,
+        # `name` is the run's display name; workflow_name is the file's name and
+        # is the more stable label when a run sets a custom run-name.
+        workflow=str(run.get("workflow_name") or run.get("name") or ""),
+        job_name=str(job.get("name", "")),
+        runner=str(job.get("runner_name") or ""),
+        status=str(job.get("status", "")),
+        conclusion=str(job.get("conclusion") or ""),
+        url=str(job.get("html_url") or ""),
+        started_at=str(job.get("started_at") or ""),
+        completed_at=str(job.get("completed_at") or ""),
+    )
 
 
 class GitHubClient:
@@ -56,6 +74,11 @@ class GitHubClient:
         self._secondary_failures: dict[bytes, int] = {}
         self._conditional_cache: OrderedDict[tuple[bytes, str], ConditionalResponse] = OrderedDict()
         self._last_mutation_at = 0.0
+        self._last_remaining: int | None = None
+        self._last_reset_at: float | None = None
+        # Highest retry_at across tokens, so the dashboard can report a
+        # cooldown without iterating _blocked_until while a request mutates it.
+        self._blocked_until_any = 0.0
 
     def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
         token_key = hashlib.sha256(pat.encode()).digest()
@@ -127,9 +150,29 @@ class GitHubClient:
             self._sleep(delay)
         self._last_mutation_at = self._wall_clock()
 
+    def rate_limit_status(self) -> dict[str, Any]:
+        """Last-seen API budget, for the dashboard. Read-only, makes no API call.
+
+        Deliberately lock-free: `_request_lock` is held for the duration of each
+        GitHub call, so taking it here would stall a dashboard refresh behind a
+        10s API timeout. These are plain attribute reads of values written under
+        that lock, so the worst case is a status one tick stale.
+        """
+        blocked_until = self._blocked_until_any
+        return {
+            "remaining": self._last_remaining,
+            "reset_at": self._last_reset_at,
+            "reserve": self._rate_limit_reserve,
+            "blocked_until": blocked_until if blocked_until > self._wall_clock() else 0.0,
+        }
+
     def _update_rate_limit(self, token_key: bytes, headers: Any) -> None:
         remaining = self._parse_int_header(headers, "X-RateLimit-Remaining")
         reset_at = self._parse_int_header(headers, "X-RateLimit-Reset")
+        if remaining is not None:
+            self._last_remaining = remaining
+        if reset_at is not None:
+            self._last_reset_at = float(reset_at)
         if (
             remaining is not None
             and remaining <= self._rate_limit_reserve
@@ -182,6 +225,7 @@ class GitHubClient:
     def _block_token(self, token_key: bytes, retry_at: float, reason: str) -> None:
         previous = self._blocked_until.get(token_key, 0.0)
         self._blocked_until[token_key] = max(previous, retry_at)
+        self._blocked_until_any = max(self._blocked_until_any, retry_at)
         if retry_at > previous:
             wait_seconds = max(1, int(retry_at - self._wall_clock()))
             log.warning("%s; pausing GitHub requests for %ds", reason, wait_seconds)
@@ -244,8 +288,20 @@ class GitHubClient:
 
         return sorted(repositories)
 
-    def get_queued_jobs_for_repo(self, pat: str, owner: str, repo: str) -> int:
-        """Count jobs waiting for a runner in a single repo."""
+    def get_queued_jobs_for_repo(
+        self,
+        pat: str,
+        owner: str,
+        repo: str,
+        jobs: list[JobInfo] | None = None,
+    ) -> int:
+        """Count jobs waiting for a runner in a single repo.
+
+        When `jobs` is supplied, every non-queued job seen along the way is
+        appended to it. That is what powers "which runner ran what" — this walk
+        already fetches the full job payload to count the queued ones, so
+        recording the rest costs no extra API requests.
+        """
         total = 0
         for status in ("queued", "in_progress"):
             runs_data = self._get(
@@ -264,17 +320,23 @@ class GitHubClient:
                 for job in jobs_data.get("jobs", []):
                     if job.get("status") == "queued":
                         total += 1
+                    elif jobs is not None:
+                        jobs.append(_job_info(job, run, repo))
         return total
 
-    def get_queued_count(self, pool: PoolConfig) -> int:
-        """Count all queued jobs for a pool (single repo or entire org)."""
+    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
+        """Count all queued jobs for a pool (single repo or entire org).
+
+        Pass `jobs` to also collect the running/finished jobs seen on the way.
+        """
         if pool.repo:
-            return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo)
+            return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo, jobs)
 
         if pool.is_personal_level:
             repositories = self.list_repositories(pool) or []
             return sum(
-                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo) for repo in repositories
+                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo, jobs)
+                for repo in repositories
             )
 
         repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")
@@ -283,7 +345,7 @@ class GitHubClient:
 
         total = 0
         for repo in repos:
-            total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"])
+            total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"], jobs)
         return total
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:

@@ -17,6 +17,16 @@ from pathlib import Path
 from typing import ClassVar
 
 from rorch.config import PoolConfig
+from rorch.protocols import ContainerInfo
+from rorch.store import (
+    EVENT_AGED_KILL,
+    EVENT_EXIT,
+    EVENT_MANUAL_STOP,
+    EVENT_SPAWN,
+    EVENT_SPAWN_FAILED,
+    EVENT_STUCK_KILL,
+    SqliteStore,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +57,19 @@ def _host_docker_gid() -> int:
     return os.stat(DOCKER_SOCKET).st_gid
 
 
+def _pinned_runner_version(image: str) -> str:
+    """Agent version a `gh-runner:2.328.0`-style tag asks for, else empty.
+
+    Only dotted numeric tags count: `latest`, `dev` and custom images have no
+    version to pass through to the build.
+    """
+    _, _, tag = image.partition(":")
+    parts = tag.split(".")
+    if len(parts) >= 2 and all(part.isdigit() for part in parts):
+        return tag
+    return ""
+
+
 def _parse_running_minutes(running_for: str) -> float | None:
     """Parse Docker's human-readable running time into minutes."""
     try:
@@ -71,9 +94,25 @@ def _parse_running_minutes(running_for: str) -> float | None:
 class DockerClient:
     """Manages runner container lifecycle via Docker CLI."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: SqliteStore | None = None) -> None:
         self._build_lock = threading.Lock()
         self._build_retry_at: dict[str, float] = {}
+        self._store = store
+
+    def _record(self, event: str, container: str = "", pool: str = "", reason: str = "") -> None:
+        """Record a lifecycle event when a store is attached; never fail the caller."""
+        if self._store is None:
+            return
+        try:
+            self._store.record_event(event, container=container, pool=pool, reason=reason)
+        except Exception:
+            log.debug("Could not record %s for %s", event, container, exc_info=True)
+
+    @staticmethod
+    def _pool_of(container: str) -> str:
+        """Pool name embedded in `gh-runner-{pool}-{uid}`."""
+        parts = container.split("-")
+        return "-".join(parts[2:-1]) if len(parts) > 3 else ""
 
     @staticmethod
     def _capture(args: list[str]) -> tuple[str, int]:
@@ -100,6 +139,60 @@ class DockerClient:
             ]
         )
         return [n for n in out.split("\n") if n] if out else []
+
+    def container_details(self, prefix: str) -> list[ContainerInfo]:
+        """Running containers with the detail the dashboard renders."""
+        out, _ = self._capture(
+            [
+                "ps",
+                "--filter",
+                f"name=^{prefix}-",
+                "--format",
+                "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.RunningFor}}",
+            ]
+        )
+        if not out:
+            return []
+        details: list[ContainerInfo] = []
+        for line in out.split("\n"):
+            parts = line.split("\t")
+            if len(parts) != 4:
+                continue
+            name, image, status, running_for = parts
+            details.append(
+                ContainerInfo(
+                    name=name,
+                    image=image,
+                    status=status,
+                    running_for=running_for,
+                    minutes=_parse_running_minutes(running_for) or 0.0,
+                )
+            )
+        return details
+
+    def stop_container(self, name: str) -> bool:
+        """Remove one runner container. Already gone counts as success."""
+        _, code = self._capture(["rm", "-f", "-v", name])
+        if code == 0:
+            log.info("  ⏹  Stopped %s", name)
+            self._record(EVENT_MANUAL_STOP, container=name, pool=self._pool_of(name))
+            return True
+        # `docker rm` on a container that no longer exists is the desired end
+        # state, so report success rather than making callers special-case it.
+        if name not in self.running_containers(name.rsplit("-", 1)[0]):
+            log.info("  ⏹  %s already gone", name)
+            return True
+        log.warning("  ✗  Could not stop %s", name)
+        return False
+
+    def container_logs(self, name: str, tail: int = 200) -> str:
+        """Tail of a runner's combined output — the runner reports fatals on stderr."""
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(max(1, min(tail, 5000))), name],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout + result.stderr
 
     @staticmethod
     def _last_logs(name: str, lines: int = 5) -> str:
@@ -139,6 +232,7 @@ class DockerClient:
                 log.warning("  ⚠  %s %s — %s", name, status, self._last_logs(name))
             self._capture(["rm", "-v", name])
             log.info("  🗑  rm %s", name)
+            self._record(EVENT_EXIT, container=name, pool=self._pool_of(name), reason=status)
 
         self._run_parallel(rm, rows, timeout=15)
 
@@ -183,6 +277,12 @@ class DockerClient:
         def kill(name: str) -> None:
             self._capture(["rm", "-f", "-v", name])
             log.info("  💀  Killed %s", name)
+            self._record(
+                EVENT_STUCK_KILL,
+                container=name,
+                pool=self._pool_of(name),
+                reason=f"never came online within {timeout_minutes}m",
+            )
 
         self._run_parallel(kill, to_kill, timeout=15)
 
@@ -239,6 +339,12 @@ class DockerClient:
         def kill(name: str) -> None:
             self._capture(["rm", "-f", "-v", name])
             log.info("  💀  Killed aged %s", name)
+            self._record(
+                EVENT_AGED_KILL,
+                container=name,
+                pool=self._pool_of(name),
+                reason=f"exceeded {max_minutes}m lifetime ceiling",
+            )
 
         self._run_parallel(kill, to_kill, timeout=15)
 
@@ -319,6 +425,12 @@ class DockerClient:
                 image,
                 RUNNER_BUILD_CONTEXT,
             ]
+            # A pool pinned to gh-runner:2.328.0 must get that agent, not the
+            # Dockerfile default under a misleading tag.
+            pinned = _pinned_runner_version(image)
+            if pinned:
+                build[1:1] = ["--build-arg", f"RUNNER_VERSION={pinned}"]
+                log.info("Building %s with pinned runner agent %s", image, pinned)
             if self._exec(build) != 0:
                 self._build_retry_at[image] = time.monotonic() + BUILD_RETRY_SECONDS
                 log.error(
@@ -332,6 +444,11 @@ class DockerClient:
     def spawn_runner(self, pool: PoolConfig) -> bool:
         """Start a new ephemeral runner container."""
         if not self.ensure_image(pool.runner_image):
+            self._record(
+                EVENT_SPAWN_FAILED,
+                pool=pool.name,
+                reason=f"image {pool.runner_image} unusable",
+            )
             return False
 
         uid = uuid.uuid4().hex[:8]
@@ -348,7 +465,7 @@ class DockerClient:
             "--restart",
             "no",
             "--network",
-            "host",
+            pool.network_mode,
             "--memory",
             pool.memory_limit,
             "--memory-swap",
@@ -388,8 +505,12 @@ class DockerClient:
         cpu_info = f" cpus={pool.cpu_limit}" if pool.cpu_limit > 0 else " cpus=unlimited"
         if code == 0:
             log.info("  ✓  Started %s  (mem=%s%s)", name, pool.memory_limit, cpu_info)
+            self._record(EVENT_SPAWN, container=name, pool=pool.name, reason=pool.display)
             return True
         log.error("  ✗  Failed to start %s", name)
+        self._record(
+            EVENT_SPAWN_FAILED, container=name, pool=pool.name, reason=f"docker run exit {code}"
+        )
         return False
 
     def prune_images(self, until: str = "24h", all_unused: bool = True) -> None:

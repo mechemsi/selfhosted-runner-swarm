@@ -1,0 +1,41 @@
+# CI profile — the signals that can't be detected by reading the repo.
+# Recorded so audits are reproducible and the bootstrap interview happens once.
+# See ~/.claude/skills/ci-cd/references/bootstrap-interview.md
+
+platform: github            # GitHub Actions (not Gitea)
+
+deploys: false              # No deploy pipeline. rorch is run by the operator with
+                            # `make up` on the host that owns the Docker socket.
+                            # Consequence: no registry push, no provenance, no
+                            # environment protection, no rollback trigger.
+
+consumed_as_dependency: false   # Nothing imports rorch as a library.
+                                # Consequence: no semantic-release, no version tags.
+
+runners:
+  default: github-hosted
+  # This repo *provides* self-hosted runners. Full image builds can run on them,
+  # but CI must not depend on them: if the orchestrator is down, the runners are
+  # gone and CI would be unable to prove the fix. Hence hosted-by-default with an
+  # opt-in repository variable.
+  self_hosted_opt_in: vars.SELF_HOSTED_BUILDS == 'true'
+  self_hosted_labels: [self-hosted, linux, x64, docker]
+
+blocking_appetite: strict   # P0 spine blocks. New gates land advisory with a
+                            # written promotion criterion.
+
+# Detection rows that did NOT apply, and why — so nobody re-adds them "for
+# completeness":
+not_applicable:
+  migrations: "SQLite schema is idempotent CREATE TABLE IF NOT EXISTS in store.py; no migration files, no heads to assert."
+  locales: "No i18n. Single-language operator tool."
+  public_env: "No NEXT_PUBLIC_/VITE_ inlining. The dashboard is server-rendered HTML with no build step."
+  contract_diff: "The JSON API has no committed OpenAPI/proto schema to diff."
+  e2e: "No Playwright/Cypress. The dashboard's behaviour is covered by Flask test-client tests."
+  bundle_size: "No browser bundler — dashboard.html ships as-is."
+  ai_evals: "No LLM SDK in dependencies."
+  iac: "No terraform/, k8s/ or helm/."
+  registry_push: "See deploys: false."
+
+known_gaps:
+  - "Actions are pinned to major tags (@v4), not commit SHAs. The ci-cd skill wants SHAs for repos that touch self-hosted runners. Pin them on the next CI pass — it needs network access to resolve each SHA."

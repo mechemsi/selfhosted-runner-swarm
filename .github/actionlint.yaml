@@ -1,0 +1,6 @@
+# Self-hosted runner labels this project provisions for itself.
+# Kept in step with `runner_labels` in example.config.yml — a workflow that
+# targets a label no pool registers will queue forever.
+self-hosted-runner:
+  labels:
+    - docker

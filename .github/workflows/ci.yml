@@ -6,9 +6,55 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
+  # Single source of truth for "what does this PR touch". Docker builds are the
+  # expensive jobs here, so they wait on this rather than running on every push.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      docker: ${{ steps.filter.outputs.docker }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'orchestrator/**'
+            docker:
+              - '**/Dockerfile*'
+              - 'docker-compose*.yml'
+              - 'runner-image/**'
+              - 'orchestrator/requirements.txt'
+              - 'orchestrator/pyproject.toml'
+            ci:
+              - '.github/workflows/**'
+              - 'Makefile'
+              - 'scripts/**'
+
+  # Never path-gated: a secret can arrive through any file.
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history — a secret removed in a later commit still leaked
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   license:
-    name: License Headers
+    name: license
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +62,47 @@ jobs:
       - name: Check license headers
         run: ./scripts/license-header.sh check
 
+  # CLAUDE.md documents architectural rules that are cheap to enforce and
+  # expensive to rediscover in review. Each grep maps to one written rule.
+  repo-rules:
+    name: repo-rules
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No Docker Python SDK (the project uses the CLI deliberately)
+        run: |
+          if grep -rnE '^\s*(import|from)\s+docker\b' orchestrator/rorch/; then
+            echo "::error::rorch uses the Docker CLI, not the Python SDK (CLAUDE.md)"
+            exit 1
+          fi
+
+      - name: github_client and docker_client must not import each other
+        run: |
+          fail=0
+          if grep -n 'docker_client' orchestrator/rorch/github_client.py; then
+            echo "::error file=orchestrator/rorch/github_client.py::must talk to Docker only through scaler.py (CLAUDE.md)"
+            fail=1
+          fi
+          if grep -n 'github_client' orchestrator/rorch/docker_client.py; then
+            echo "::error file=orchestrator/rorch/docker_client.py::must talk to GitHub only through scaler.py (CLAUDE.md)"
+            fail=1
+          fi
+          exit $fail
+
+      - name: Runner container naming stays gh-runner-{pool}-{uuid}
+        run: |
+          grep -q 'f"{pool.container_prefix}-{uid}"' orchestrator/rorch/docker_client.py || {
+            echo "::error::container naming changed — prefix-based filtering depends on it (CLAUDE.md)"
+            exit 1
+          }
+
   lint:
-    name: Lint & Type Check
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,6 +113,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: orchestrator/pyproject.toml
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
@@ -41,8 +128,10 @@ jobs:
       - name: Pyright
         run: pyright rorch/
 
-  test:
-    name: Tests
+  test-unit:
+    name: test-unit
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,6 +142,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: orchestrator/pyproject.toml
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
@@ -60,12 +151,17 @@ jobs:
       - name: Run pytest
         run: pytest --cov=rorch --cov-report=term-missing -v
 
-  deps:
-    name: Dependency Audit
+  # Advisory: promote to blocking once it has run clean for two weeks.
+  # Blocking on a transitive CVE with no fix available strands every PR.
+  sca:
+    name: sca
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      issues: write
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: orchestrator
     steps:
       - uses: actions/checkout@v4
 
@@ -73,8 +169,172 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check outdated & vulnerable packages
+      - name: Audit dependencies
+        # Audit the declared runtime dependencies, not the installed
+        # environment: installing rorch itself makes pip-audit try to look up a
+        # local, unpublished package on PyPI, and --strict turns that
+        # "could not audit" into a failure.
+        run: |
+          pip install pip-audit
+          pip-audit --strict -r requirements.txt
+
+  # Cheap Dockerfile validation that runs everywhere: catches syntax errors,
+  # bad instruction order and lint violations without executing the build.
+  docker-lint:
+    name: docker-lint
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build checks (orchestrator)
+        run: docker buildx build --check ./orchestrator
+
+      - name: Build checks (runner image)
+        run: docker buildx build --check ./runner-image
+
+      # Advisory: the runner image deliberately keeps build-essential and pins
+      # apt versions loosely. Promote once the reported findings are triaged.
+      - name: Hadolint (orchestrator)
+        uses: hadolint/hadolint-action@v3.4.0
+        continue-on-error: true
+        with:
+          dockerfile: orchestrator/Dockerfile
+
+      - name: Hadolint (runner image)
+        uses: hadolint/hadolint-action@v3.4.0
+        continue-on-error: true
+        with:
+          dockerfile: runner-image/Dockerfile
+
+  # The real builds — OFF by default.
+  #
+  # On GitHub-hosted runners this takes ~16 minutes, almost all of it compiling
+  # Python from source for the runner image. Enable it by setting the repository
+  # variable SELF_HOSTED_BUILDS=true, which both switches the job on and moves it
+  # onto this project's own runners, where it is cheap.
+  #
+  # What this costs while disabled: the runner agent version assertion (>= 2.327
+  # for Node24 actions) and the entrypoint read+execute assertion only run once
+  # an image is actually built, so neither guards a PR right now. docker-lint
+  # still runs on every PR and catches Dockerfile syntax and instruction-order
+  # breakage. Turn this back on before trusting CI to catch a broken image.
+  docker-build-scan:
+    name: docker-build-scan
+    needs: [changes, lint, test-unit, docker-lint]
+    # A runner-image-only PR leaves `python` false, so lint and test-unit are
+    # skipped — and a job needing a skipped job is skipped too by default. That
+    # would silently drop build validation from exactly the PRs it exists for.
+    # !cancelled() opts out of that; !contains(...'failure') keeps the gate.
+    if: >-
+      ${{ vars.SELF_HOSTED_BUILDS == 'true'
+          && !cancelled()
+          && !contains(needs.*.result, 'failure')
+          && needs.changes.outputs.docker == 'true' }}
+    runs-on: [self-hosted, linux, x64, docker]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build orchestrator image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./orchestrator
+          push: false
+          load: true
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator
+          tags: gh-runner-orchestrator:ci-${{ github.sha }}
+
+      - name: Build runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./runner-image
+          push: false
+          load: true
+          build-args: DOCKER_GID=988
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=max,scope=runner
+          tags: gh-runner:ci-${{ github.sha }}
+
+      - name: Runner agent supports Node24 actions
+        run: |
+          version=$(docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+            -c 'echo "$RUNNER_VERSION"')
+          echo "runner agent: $version"
+          # < 2.327 fails every Node24 action with
+          # "'using: node24' is not supported".
+          printf '2.327.0\n%s\n' "$version" | sort -V -C || {
+            echo "::error::runner agent $version predates Node24 support (needs >= 2.327)"
+            exit 1
+          }
+
+      # The image can build perfectly and still be unable to start: COPY keeps
+      # the host file's mode, so a checkout with entrypoint.sh at 0600 yields an
+      # entrypoint the non-root runner user cannot read. Runners then die with
+      # "Permission denied" before registering, and the pool just respawns
+      # forever. Assert the runner user can actually execute it.
+      - name: Entrypoint is executable by the runner user
+        run: |
+          mode=$(docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+            -c 'stat -c %a /entrypoint.sh')
+          echo "entrypoint mode: $mode"
+          docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+            -c 'test -r /entrypoint.sh && test -x /entrypoint.sh' || {
+            echo "::error::/entrypoint.sh is $mode — the runner user needs read+execute"
+            exit 1
+          }
+
+      # Advisory: the base image is Ubuntu 22.04 with a full CI toolchain, so a
+      # clean report is unrealistic. Promote to blocking on CRITICAL-only once
+      # the current findings are triaged.
+      - name: Scan orchestrator image
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: gh-runner-orchestrator:ci-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+  # Advisory. Labels reconcile within the size/ namespace on every push.
+  pr-size:
+    name: pr-size
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Label by size
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: ./scripts/check-deps.sh || true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --shortstat "$BASE" "$HEAD" | grep -oE '[0-9]+ insertion|[0-9]+ deletion' \
+            | grep -oE '[0-9]+' | paste -sd+ | bc)
+          changed=${changed:-0}
+          if   [ "$changed" -lt 50 ];   then size=XS
+          elif [ "$changed" -lt 200 ];  then size=S
+          elif [ "$changed" -lt 500 ];  then size=M
+          elif [ "$changed" -lt 1000 ]; then size=L
+          else size=XL; fi
+          echo "$changed lines changed -> size/$size"
+          # Own the whole size/ namespace: remove the others, add the right one.
+          for other in XS S M L XL; do
+            [ "$other" = "$size" ] && continue
+            gh pr edit "$PR" --remove-label "size/$other" 2>/dev/null || true
+          done
+          gh label create "size/$size" --color ededed --force >/dev/null 2>&1 || true
+          gh pr edit "$PR" --add-label "size/$size"

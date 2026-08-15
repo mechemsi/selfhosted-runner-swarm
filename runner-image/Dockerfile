@@ -5,7 +5,18 @@ FROM ubuntu:22.04
 LABEL rorch.keep=true
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV RUNNER_VERSION=2.335.1
+
+# Runner agent version. An ARG so a pool can pin an older agent:
+#   docker build --build-arg RUNNER_VERSION=2.328.0 -t gh-runner:2.328.0 .
+# Must be >= 2.327 for Node24-runtime actions (shivammathur/setup-php@v2 and
+# the current actions/* releases); older agents fail with
+# "'using: node24' is not supported".
+ARG RUNNER_VERSION=2.335.1
+ENV RUNNER_VERSION=${RUNNER_VERSION}
+
+# Stamped so the orchestrator (and `docker image inspect`) can tell which agent
+# version a tag actually contains.
+LABEL rorch.runner_version=${RUNNER_VERSION}
 
 # Toolchain versions to pre-stage for actions/setup-* (avoids download on every run)
 ARG NODE_VERSION=22.16.0
@@ -123,7 +134,13 @@ RUN curl -o runner.tar.gz -L \
     && chown -R runner:runner /home/runner
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# 0755, not `chmod +x`. COPY preserves the host file's mode, and `+x` only adds
+# the execute bit — a host file at 0600 becomes 0711, which bash cannot run as
+# the non-root `runner` user because executing a script also requires *read*
+# permission. That fails at spawn with "/entrypoint.sh: Permission denied" and
+# the runner dies before registering. Set the mode absolutely so the image does
+# not depend on the checkout's permissions.
+RUN chmod 0755 /entrypoint.sh
 
 USER runner
 WORKDIR /home/runner/actions-runner

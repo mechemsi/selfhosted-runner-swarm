@@ -19,22 +19,55 @@ class RunnerInfo:
     busy: bool
 
 
+@dataclass(frozen=True)
+class JobInfo:
+    """One Actions job as GitHub reports it, with the runner that took it."""
+
+    job_id: int
+    repo: str
+    workflow: str
+    job_name: str
+    runner: str
+    status: str
+    conclusion: str
+    url: str
+    started_at: str
+    completed_at: str
+
+
 class RunnerAPIClient(Protocol):
     """Interface for GitHub Actions runner API operations."""
 
     def list_repositories(self, pool: PoolConfig) -> list[str] | None: ...
 
-    def get_queued_count(self, pool: PoolConfig) -> int: ...
+    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int: ...
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None: ...
 
     def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool: ...
 
 
+@dataclass(frozen=True)
+class ContainerInfo:
+    """One runner container as Docker reports it."""
+
+    name: str
+    image: str
+    status: str
+    running_for: str
+    minutes: float
+
+
 class ContainerManager(Protocol):
     """Interface for container lifecycle operations."""
 
     def running_containers(self, prefix: str) -> list[str]: ...
+
+    def container_details(self, prefix: str) -> list[ContainerInfo]: ...
+
+    def stop_container(self, name: str) -> bool: ...
+
+    def container_logs(self, name: str, tail: int = 200) -> str: ...
 
     def cleanup_exited(self, prefix: str) -> None: ...
 
@@ -43,6 +76,13 @@ class ContainerManager(Protocol):
         prefix: str,
         online_names: set[str],
         timeout_minutes: int = 3,
+    ) -> None: ...
+
+    def cleanup_aged(
+        self,
+        prefix: str,
+        max_minutes: int,
+        exclude: frozenset[str] = frozenset(),
     ) -> None: ...
 
     def spawn_runner(self, pool: PoolConfig) -> bool: ...
