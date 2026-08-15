@@ -144,6 +144,17 @@ const ago = (ts) => {
   return Math.round(s / 3600) + 'h ago';
 };
 
+// Everything rendered below is attacker-influenceable: workflow and job names
+// come from the GitHub API, so anyone who can open a PR on a watched repo picks
+// them. This page holds the auth cookie for an API that starts root containers,
+// so an injected <img onerror> here would be a full privilege escalation.
+// Escape every interpolated value; never drop raw API text into innerHTML.
+const ESCAPES = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ESCAPES[ch]);
+
+// Only link out to real GitHub URLs — javascript:/data: hrefs are XSS too.
+const safeUrl = (u) => (/^https:\/\/[\w.-]+\//.test(String(u || '')) ? String(u) : '');
+
 const cell = (html) => { const td = document.createElement('td'); td.innerHTML = html; return td; };
 
 function renderGlobals(g, rate) {
@@ -171,22 +182,23 @@ function renderPools(pools) {
                 : '<span class="ok">active</span>';
     const tr = document.createElement('tr');
     tr.append(
-      cell(`<strong>${c.name}</strong>`), cell(`<span class="muted">${c.display}</span>`),
-      cell(state), cell(p.containers), cell(p.online), cell(p.idle), cell(p.busy),
-      cell(p.queued > 0 ? `<span class="warn">${p.queued}</span>` : p.queued),
-      cell(`<input value="${c.max_runners}" data-field="max_runners" data-pool="${c.name}">`),
-      cell(`<input value="${c.min_idle}" data-field="min_idle" data-pool="${c.name}">`),
+      cell(`<strong>${esc(c.name)}</strong>`), cell(`<span class="muted">${esc(c.display)}</span>`),
+      cell(state), cell(esc(p.containers)), cell(esc(p.online)), cell(esc(p.idle)),
+      cell(esc(p.busy)),
+      cell(p.queued > 0 ? `<span class="warn">${esc(p.queued)}</span>` : esc(p.queued)),
+      cell(`<input value="${esc(c.max_runners)}" data-field="max_runners" data-pool="${esc(c.name)}">`),
+      cell(`<input value="${esc(c.min_idle)}" data-field="min_idle" data-pool="${esc(c.name)}">`),
       cell(`<span class="muted">${p.duration ? p.duration.toFixed(2) + 's' : '—'} · ${ago(p.last_tick)}</span>`),
     );
     const actions = document.createElement('td');
     actions.className = 'row';
     actions.innerHTML =
-      `<button data-act="pause" data-pool="${c.name}">${p.paused ? 'resume' : 'pause'}</button>` +
-      `<button data-act="drain" data-pool="${c.name}">${p.draining ? 'undrain' : 'drain'}</button>` +
-      `<button data-act="up" data-pool="${c.name}">+1</button>` +
-      `<button data-act="down" data-pool="${c.name}">−1</button>` +
-      `<button data-act="save" data-pool="${c.name}">save</button>` +
-      `<button data-act="reset" data-pool="${c.name}">reset</button>`;
+      `<button data-act="pause" data-pool="${esc(c.name)}">${p.paused ? 'resume' : 'pause'}</button>` +
+      `<button data-act="drain" data-pool="${esc(c.name)}">${p.draining ? 'undrain' : 'drain'}</button>` +
+      `<button data-act="up" data-pool="${esc(c.name)}">+1</button>` +
+      `<button data-act="down" data-pool="${esc(c.name)}">−1</button>` +
+      `<button data-act="save" data-pool="${esc(c.name)}">save</button>` +
+      `<button data-act="reset" data-pool="${esc(c.name)}">reset</button>`;
     tr.append(actions);
     body.append(tr);
 
@@ -195,17 +207,19 @@ function renderPools(pools) {
     for (const r of p.repos || []) {
       const sub = document.createElement('tr');
       sub.append(
-        cell(''), cell(`<span class="muted">↳ ${r.name.replace(c.name + '-', '')}</span>`),
-        cell(''), cell(r.containers), cell(r.online), cell(r.idle), cell(r.busy),
-        cell(r.queued > 0 ? `<span class="warn">${r.queued}</span>` : r.queued),
+        cell(''), cell(`<span class="muted">↳ ${esc(r.name.replace(c.name + '-', ''))}</span>`),
+        cell(''), cell(esc(r.containers)), cell(esc(r.online)), cell(esc(r.idle)),
+        cell(esc(r.busy)),
+        cell(r.queued > 0 ? `<span class="warn">${esc(r.queued)}</span>` : esc(r.queued)),
         cell(''), cell(''), cell(''), cell(''),
       );
       body.append(sub);
     }
     if (p.repo_count) {
       const note = document.createElement('tr');
-      const td = cell(`<span class="muted">${p.repo_count} repositories tracked` +
-        `${(p.repos || []).length ? `, ${p.repos.length} active` : ', all quiet'}</span>`);
+      const active = (p.repos || []).length;
+      const td = cell(`<span class="muted">${esc(p.repo_count)} repositories tracked` +
+        `${active ? `, ${esc(active)} active` : ', all quiet'}</span>`);
       td.colSpan = 12;
       note.append(td);
       body.append(note);
@@ -226,21 +240,21 @@ function renderContainers(containers) {
       : '<span class="muted">unknown</span>';
     const tr = document.createElement('tr');
     const job = c.job
-      ? `<br><span class="muted">${c.job.repo} · ${c.job.workflow} / ${c.job.job_name}</span>`
+      ? `<br><span class="muted">${esc(c.job.repo)} · ${esc(c.job.workflow)} / ${esc(c.job.job_name)}</span>`
       : '';
     tr.append(
-      cell(`${c.name}${c.protected ? ' <span class="pill">kept</span>' : ''}${job}`),
-      cell(`<span class="muted">${c.image}</span>`), cell(c.running_for),
-      cell(`<span class="muted">${c.status}</span>`), cell(gh),
+      cell(`${esc(c.name)}${c.protected ? ' <span class="pill">kept</span>' : ''}${job}`),
+      cell(`<span class="muted">${esc(c.image)}</span>`), cell(esc(c.running_for)),
+      cell(`<span class="muted">${esc(c.status)}</span>`), cell(gh),
     );
     const actions = document.createElement('td');
     actions.className = 'row';
     actions.innerHTML =
-      `<button data-cact="logs" data-name="${c.name}">logs</button>` +
-      `<button data-cact="protect" data-name="${c.name}" data-on="${c.protected}">` +
+      `<button data-cact="logs" data-name="${esc(c.name)}">logs</button>` +
+      `<button data-cact="protect" data-name="${esc(c.name)}" data-on="${c.protected}">` +
       `${c.protected ? 'unkeep' : 'keep'}</button>` +
-      `<button data-cact="restart" data-name="${c.name}">restart</button>` +
-      `<button class="bad" data-cact="stop" data-name="${c.name}">stop</button>`;
+      `<button data-cact="restart" data-name="${esc(c.name)}">restart</button>` +
+      `<button class="bad" data-cact="stop" data-name="${esc(c.name)}">stop</button>`;
     tr.append(actions);
     body.append(tr);
   }
@@ -258,14 +272,15 @@ function renderJobs(jobs) {
     const result = running ? '<span class="warn">running</span>'
       : j.conclusion === 'success' ? '<span class="ok">success</span>'
       : j.conclusion === 'failure' ? '<span class="bad">failure</span>'
-      : `<span class="muted">${j.conclusion || 'unknown'}</span>`;
+      : `<span class="muted">${esc(j.conclusion || 'unknown')}</span>`;
     const took = j.ended_ts ? ` <span class="muted">${Math.max(1, Math.round(j.ended_ts - j.ts))}s</span>` : '';
-    const label = `${j.workflow || '—'} / <strong>${j.job_name || '—'}</strong>`;
+    const label = `${esc(j.workflow || '—')} / <strong>${esc(j.job_name || '—')}</strong>`;
+    const href = safeUrl(j.url);
     const tr = document.createElement('tr');
     tr.append(
-      cell(`<span class="muted">${ago(j.ts)}</span>`), cell(j.repo || '—'),
-      cell(j.url ? `<a href="${j.url}" target="_blank" rel="noopener">${label}</a>` : label),
-      cell(`<span class="muted">${j.runner || '—'}</span>`), cell(result + took),
+      cell(`<span class="muted">${ago(j.ts)}</span>`), cell(esc(j.repo || '—')),
+      cell(href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>` : label),
+      cell(`<span class="muted">${esc(j.runner || '—')}</span>`), cell(result + took),
     );
     body.append(tr);
   }
@@ -278,9 +293,10 @@ function renderEvents(events) {
     const tr = document.createElement('tr');
     const cls = e.event.includes('fail') ? 'bad' : e.event.includes('kill') ? 'warn' : '';
     tr.append(
-      cell(`<span class="muted">${ago(e.ts)}</span>`), cell(`<span class="${cls}">${e.event}</span>`),
-      cell(e.pool || '—'), cell(`<span class="muted">${e.container || '—'}</span>`),
-      cell(`<span class="muted">${e.reason || ''}</span>`),
+      cell(`<span class="muted">${ago(e.ts)}</span>`),
+      cell(`<span class="${cls}">${esc(e.event)}</span>`),
+      cell(esc(e.pool || '—')), cell(`<span class="muted">${esc(e.container || '—')}</span>`),
+      cell(`<span class="muted">${esc(e.reason || '')}</span>`),
     );
     body.append(tr);
   }
@@ -319,7 +335,7 @@ function renderCharts(data) {
     `<figure class="chart"><figcaption>busy runners</figcaption>${sparkline(series.busy, '#3fb950')}</figure>` +
     `<figure class="chart"><figcaption>events (${data.hours}h)</figcaption>` +
     (counts.length
-      ? counts.map(([k, v]) => `<div>${k} <strong>${v}</strong></div>`).join('')
+      ? counts.map(([k, v]) => `<div>${esc(k)} <strong>${esc(v)}</strong></div>`).join('')
       : '<div class="muted">none</div>') + '</figure>';
 }
 
@@ -333,7 +349,7 @@ async function refresh() {
     renderEvents(state.events);
     $('#stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (err) {
-    $('#stamp').innerHTML = `<span class="bad">${err.message}</span>`;
+    $('#stamp').innerHTML = `<span class="bad">${esc(err.message)}</span>`;
   }
 }
 

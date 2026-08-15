@@ -292,3 +292,52 @@ class TestMetrics:
     def test_metrics_requires_auth(self, deps: Deps) -> None:
         deps.token = "s3cret"
         assert create_app(deps).test_client().get("/metrics").status_code == 401
+
+
+class TestDashboardEscaping:
+    """The dashboard renders GitHub-supplied text into innerHTML.
+
+    Workflow and job names are chosen by anyone who can open a PR on a watched
+    repository, and the page carries the auth cookie for an API that starts
+    root-privileged containers — so an unescaped value here is a privilege
+    escalation, not a cosmetic bug.
+    """
+
+    _SOURCE = Path(__file__).resolve().parents[1] / "rorch" / "dashboard.html"
+    # Fields that arrive from GitHub, Docker or the store rather than the code.
+    _UNTRUSTED = (
+        "workflow",
+        "job_name",
+        "repo",
+        "runner",
+        "conclusion",
+        "reason",
+        "image",
+        "status",
+        "container",
+        "event",
+        "display",
+        "name",
+    )
+
+    def test_every_untrusted_field_is_escaped(self) -> None:
+        source = self._SOURCE.read_text(encoding="utf-8")
+        bare = [
+            f"${{{obj}.{field}"
+            for obj in ("j", "c", "e", "r", "p")
+            for field in self._UNTRUSTED
+            if f"${{{obj}.{field}" in source
+        ]
+        assert bare == [], f"unescaped interpolation in dashboard.html: {bare}"
+
+    def test_escape_helper_covers_the_dangerous_characters(self) -> None:
+        source = self._SOURCE.read_text(encoding="utf-8")
+        for char in ("&", "<", ">", '"', "'"):
+            assert f"'{char}'" in source or f'"{char}"' in source, char
+        assert "const esc =" in source
+
+    def test_job_links_are_restricted_to_https(self) -> None:
+        """A javascript: or data: href would execute on click."""
+        source = self._SOURCE.read_text(encoding="utf-8")
+        assert "safeUrl" in source
+        assert 'href="${esc(href)}"' in source
