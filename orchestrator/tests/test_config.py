@@ -315,3 +315,60 @@ class TestDuplicatePoolNames:
     def test_duplicates_are_not_fatal(self) -> None:
         """A running deployment with a duplicate must still start."""
         assert validation_errors([self._pool("dup"), self._pool("dup")]) == []
+
+
+class TestRepositoryFiltering:
+    """Discovery pools must not silently provision for repos you excluded."""
+
+    def _pool(self, **kwargs: object) -> PoolConfig:
+        return PoolConfig(name="p", pat="ghp_x", owner="acme", scope="personal", **kwargs)  # type: ignore[arg-type]
+
+    def test_public_repos_are_skipped_by_default(self) -> None:
+        assert self._pool().include_public_repos is False
+
+    def test_exclude_is_empty_by_default(self) -> None:
+        assert self._pool().excluded_repo_patterns == ()
+
+    def test_exact_name_excluded(self) -> None:
+        pool = self._pool(exclude_repos="scratch,legacy")
+        assert pool.excludes_repo("scratch")
+        assert pool.excludes_repo("legacy")
+        assert not pool.excludes_repo("keeper")
+
+    def test_glob_pattern_excluded(self) -> None:
+        pool = self._pool(exclude_repos="legacy-*,*-archive")
+        assert pool.excludes_repo("legacy-api")
+        assert pool.excludes_repo("2019-archive")
+        assert not pool.excludes_repo("api-legacy")
+
+    def test_whitespace_is_tolerated(self) -> None:
+        pool = self._pool(exclude_repos=" a , b ,, c ")
+        assert pool.excluded_repo_patterns == ("a", "b", "c")
+
+    def test_yaml_list_form_is_accepted(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "pools:\n"
+            "  - name: p\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "    scope: personal\n"
+            "    include_public_repos: true\n"
+            "    exclude_repos:\n"
+            "      - scratch\n"
+            "      - legacy-*\n"
+        )
+        pool = load_config(str(config))[0]
+        assert pool.include_public_repos is True
+        assert pool.excluded_repo_patterns == ("scratch", "legacy-*")
+
+    def test_csv_string_form_is_accepted(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "pools:\n"
+            "  - name: p\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "    exclude_repos: scratch, legacy-*\n"
+        )
+        assert load_config(str(config))[0].excluded_repo_patterns == ("scratch", "legacy-*")

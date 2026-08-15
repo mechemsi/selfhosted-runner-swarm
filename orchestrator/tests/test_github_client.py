@@ -5,6 +5,7 @@
 
 import io
 import urllib.error
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -201,3 +202,48 @@ class TestRateLimitProtection:
             client._get("token", "/test")
 
         assert error.value.retry_at_epoch == 190
+
+
+class TestRepositoryDiscoveryFilters:
+    """A self-hosted runner on a public repo is code execution for any forker."""
+
+    _REPOS: ClassVar[list[dict[str, object]]] = [
+        {"name": "private-api", "private": True, "owner": {"login": "acme"}},
+        {"name": "public-docs", "private": False, "owner": {"login": "acme"}},
+        {"name": "legacy-thing", "private": True, "owner": {"login": "acme"}},
+        {"name": "archived", "private": True, "owner": {"login": "acme"}, "archived": True},
+        {"name": "someone-else", "private": True, "owner": {"login": "other"}},
+    ]
+
+    def _discover(self, pool: PoolConfig, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        client = GitHubClient()
+        monkeypatch.setattr(
+            client, "_get", lambda pat, path: self._REPOS if "page=1" in path else []
+        )
+        return client.list_repositories(pool) or []
+
+    def test_public_repos_excluded_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", scope="personal")
+        assert self._discover(pool, monkeypatch) == ["legacy-thing", "private-api"]
+
+    def test_public_repos_included_when_opted_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(
+            name="p", pat="ghp_x", owner="acme", scope="personal", include_public_repos=True
+        )
+        assert "public-docs" in self._discover(pool, monkeypatch)
+
+    def test_exclude_repos_applies_on_top(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pool = PoolConfig(
+            name="p", pat="ghp_x", owner="acme", scope="personal", exclude_repos="legacy-*"
+        )
+        assert self._discover(pool, monkeypatch) == ["private-api"]
+
+    def test_archived_and_other_owners_still_excluded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = PoolConfig(
+            name="p", pat="ghp_x", owner="acme", scope="personal", include_public_repos=True
+        )
+        found = self._discover(pool, monkeypatch)
+        assert "archived" not in found
+        assert "someone-else" not in found

@@ -263,6 +263,8 @@ class GitHubClient:
     def list_repositories(self, pool: PoolConfig) -> list[str] | None:
         """List accessible, active repositories owned by a personal account."""
         repositories: set[str] = set()
+        skipped_public: set[str] = set()
+        excluded: set[str] = set()
         page = 1
 
         while True:
@@ -280,12 +282,37 @@ class GitHubClient:
                     continue
                 if repo.get("archived") or repo.get("disabled"):
                     continue
+                # A self-hosted runner on a public repo is code execution for
+                # anyone who can open a fork PR, on the host holding the Docker
+                # socket. Skipped unless the pool explicitly opts in.
+                if not repo.get("private", True) and not pool.include_public_repos:
+                    skipped_public.add(name)
+                    continue
+                if pool.excludes_repo(name):
+                    excluded.add(name)
+                    continue
                 repositories.add(name)
 
             if len(data) < 100:
                 break
             page += 1
 
+        if skipped_public:
+            log.info(
+                "[%s] Skipping %d public repositor%s (set include_public_repos to override): %s",
+                pool.name,
+                len(skipped_public),
+                "y" if len(skipped_public) == 1 else "ies",
+                ", ".join(sorted(skipped_public)),
+            )
+        if excluded:
+            log.info(
+                "[%s] Excluded %d repositor%s by exclude_repos: %s",
+                pool.name,
+                len(excluded),
+                "y" if len(excluded) == 1 else "ies",
+                ", ".join(sorted(excluded)),
+            )
         return sorted(repositories)
 
     def get_queued_jobs_for_repo(
