@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.protocols import ContainerManager, RunnerAPIClient, RunnerInfo
+from rorch.store import EVENT_DEREGISTER, PoolState, SqliteStore
 
 log = logging.getLogger(__name__)
 
@@ -56,16 +57,37 @@ class PoolScaler:
         docker: ContainerManager,
         clock: Callable[[], float] = time.monotonic,
         max_total_runners: int = 0,
+        store: SqliteStore | None = None,
     ) -> None:
         self._github = github
         self._docker = docker
         self._clock = clock
         self._max_total_runners = max_total_runners
+        self._store = store
         self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
         self._next_poll_at: dict[tuple[str, str, str, bytes], float] = {}
 
-    def tick(self, pool: PoolConfig) -> None:
-        """Run one complete scaling cycle for a pool."""
+    @property
+    def max_total_runners(self) -> int:
+        return self._max_total_runners
+
+    @max_total_runners.setter
+    def max_total_runners(self, value: int) -> None:
+        """Kept settable so a config change from the API applies on the next tick."""
+        self._max_total_runners = value
+
+    def tick(self, pool: PoolConfig, state: PoolState | None = None) -> None:
+        """Run one complete scaling cycle for a pool.
+
+        A paused pool is skipped entirely; a draining one is still inspected and
+        cleaned up but never provisions, so busy runners finish their jobs and
+        the pool empties itself.
+        """
+        state = state or PoolState()
+        if state.paused:
+            log.info("[%s] Paused — skipping tick", pool.name)
+            return
+
         started = time.monotonic()
         now = self._clock()
         pool_key = self._pool_key(pool)
@@ -78,9 +100,9 @@ class PoolScaler:
 
         try:
             if pool.is_personal_level:
-                self._tick_personal(pool, now)
+                self._tick_personal(pool, now, draining=state.draining)
             else:
-                self._tick_single(pool)
+                self._tick_single(pool, draining=state.draining)
         except GitHubRateLimitError as error:
             retry_after = max(1.0, error.retry_at_epoch - time.time())
             self._next_poll_at[pool_key] = max(
@@ -113,10 +135,14 @@ class PoolScaler:
             )
         return min(to_spawn, headroom)
 
-    def _tick_single(self, pool: PoolConfig) -> None:
+    def _tick_single(self, pool: PoolConfig, draining: bool = False) -> None:
         inspection = self._inspect_pool(pool)
         self._log_inspection(inspection)
-        to_spawn = self._calculate_spawn_count(pool, inspection)
+        if draining:
+            log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
+            to_spawn = 0
+        else:
+            to_spawn = self._calculate_spawn_count(pool, inspection)
         to_spawn = self._cap_to_global_limit(pool.name, to_spawn)
         self._run_runner_operations(
             [inspection],
@@ -124,7 +150,7 @@ class PoolScaler:
             pool.runner_operation_workers,
         )
 
-    def _tick_personal(self, pool: PoolConfig, now: float) -> None:
+    def _tick_personal(self, pool: PoolConfig, now: float, draining: bool = False) -> None:
         """Scale repository runners under one personal-account capacity limit."""
         repo_names = self._get_personal_repositories(pool, now)
         if not repo_names:
@@ -141,7 +167,13 @@ class PoolScaler:
             self._log_inspection(inspection)
 
         total_running = sum(inspection.running for inspection in inspections)
-        capacity = self._cap_to_global_limit(pool.name, max(0, pool.max_runners - total_running))
+        if draining:
+            log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
+            capacity = 0
+        else:
+            capacity = self._cap_to_global_limit(
+                pool.name, max(0, pool.max_runners - total_running)
+            )
         allocations = {inspection.pool.repo: 0 for inspection in inspections}
         ordered = sorted(inspections, key=lambda item: (-item.queued, item.pool.repo))
 
@@ -236,6 +268,8 @@ class PoolScaler:
             and runner.name not in running_names
         )
 
+        self._record_runner_status(pool, runner_list, prefix)
+
         self._docker.cleanup_stuck(
             prefix,
             running_names & online_names,
@@ -307,6 +341,9 @@ class PoolScaler:
         log.info("  🧹  Deregistering offline runner: %s (id=%s)", runner.name, runner.id)
         if self._github.deregister_runner(pool, runner.id):
             log.info("  ✓  Deregistered %s", runner.name)
+            self._record_event(
+                EVENT_DEREGISTER, container=runner.name, pool=pool.name, reason="offline"
+            )
             return True
         log.warning("  ✗  Failed to deregister %s", runner.name)
         return False
@@ -363,8 +400,57 @@ class PoolScaler:
             hashlib.sha256(pool.pat.encode()).digest(),
         )
 
-    @staticmethod
-    def _log_inspection(inspection: PoolInspection) -> None:
+    def _record_runner_status(
+        self, pool: PoolConfig, runners: list[RunnerInfo], prefix: str
+    ) -> None:
+        """Cache what GitHub reports so the dashboard can show busy/idle per runner.
+
+        Without this the UI would have to hit the GitHub API on every page
+        refresh, which competes with the scaler for the same rate budget.
+        """
+        if self._store is None:
+            return
+        try:
+            self._store.replace_runner_status(
+                pool.name,
+                [
+                    (runner.name, runner.status, runner.busy)
+                    for runner in runners
+                    if runner.name.startswith(prefix)
+                ],
+            )
+        except Exception:
+            log.debug("Could not record runner status for %s", pool.name, exc_info=True)
+
+    def _record_snapshot(self, inspection: PoolInspection) -> None:
+        """Persist one tick's numbers for the dashboard and its history charts."""
+        if self._store is None:
+            return
+        try:
+            self._store.record_tick(
+                pool=inspection.pool.name,
+                display=inspection.pool.display,
+                containers=inspection.running,
+                online=inspection.online,
+                idle=inspection.idle,
+                busy=inspection.busy,
+                queued=inspection.queued,
+                duration=inspection.duration_seconds,
+            )
+        except Exception:
+            log.debug("Could not record snapshot for %s", inspection.pool.name, exc_info=True)
+
+    def _record_event(self, event: str, container: str, pool: str, reason: str) -> None:
+        """Persist a lifecycle event; a store failure must never break a tick."""
+        if self._store is None:
+            return
+        try:
+            self._store.record_event(event, container=container, pool=pool, reason=reason)
+        except Exception:
+            log.debug("Could not record %s for %s", event, container, exc_info=True)
+
+    def _log_inspection(self, inspection: PoolInspection) -> None:
+        self._record_snapshot(inspection)
         log.info(
             "[%s] %s | containers=%d online=%d (idle=%d busy=%d) queued=%d check=%.2fs",
             inspection.pool.name,

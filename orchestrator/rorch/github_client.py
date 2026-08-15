@@ -56,6 +56,8 @@ class GitHubClient:
         self._secondary_failures: dict[bytes, int] = {}
         self._conditional_cache: OrderedDict[tuple[bytes, str], ConditionalResponse] = OrderedDict()
         self._last_mutation_at = 0.0
+        self._last_remaining: int | None = None
+        self._last_reset_at: float | None = None
 
     def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
         token_key = hashlib.sha256(pat.encode()).digest()
@@ -127,9 +129,24 @@ class GitHubClient:
             self._sleep(delay)
         self._last_mutation_at = self._wall_clock()
 
+    def rate_limit_status(self) -> dict[str, Any]:
+        """Last-seen API budget, for the dashboard. Read-only, no API call."""
+        with self._request_lock:
+            blocked_until = max(self._blocked_until.values(), default=0.0)
+            return {
+                "remaining": self._last_remaining,
+                "reset_at": self._last_reset_at,
+                "reserve": self._rate_limit_reserve,
+                "blocked_until": blocked_until if blocked_until > self._wall_clock() else 0.0,
+            }
+
     def _update_rate_limit(self, token_key: bytes, headers: Any) -> None:
         remaining = self._parse_int_header(headers, "X-RateLimit-Remaining")
         reset_at = self._parse_int_header(headers, "X-RateLimit-Reset")
+        if remaining is not None:
+            self._last_remaining = remaining
+        if reset_at is not None:
+            self._last_reset_at = float(reset_at)
         if (
             remaining is not None
             and remaining <= self._rate_limit_reserve

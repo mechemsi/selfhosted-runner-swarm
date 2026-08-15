@@ -1,0 +1,358 @@
+<!doctype html>
+<!-- Copyright (c) 2026 Mechemsi. All rights reserved. MIT licensed. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rorch — runner orchestrator</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #dfe3ec;
+    --muted: #8b93a7; --accent: #4c8dff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --panel:#fff; --line:#dfe2e8; --text:#1b1f27; --muted:#5c6472; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; gap:1rem; align-items:baseline; flex-wrap:wrap;
+           padding:.75rem 1rem; border-bottom:1px solid var(--line); }
+  h1 { font-size:1rem; margin:0; letter-spacing:.05em; }
+  h2 { font-size:.8rem; margin:0 0 .5rem; color:var(--muted);
+       text-transform:uppercase; letter-spacing:.08em; }
+  main { padding:1rem; display:grid; gap:1rem; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:1rem; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:500; padding:.3rem .5rem;
+       border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:.3rem .5rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  .wrap { overflow-x:auto; }
+  button { background:transparent; color:var(--text); border:1px solid var(--line);
+           border-radius:4px; padding:.15rem .45rem; cursor:pointer; font:inherit; font-size:12px; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.bad:hover { border-color:var(--bad); color:var(--bad); }
+  input { background:var(--bg); color:var(--text); border:1px solid var(--line);
+          border-radius:4px; padding:.15rem .35rem; font:inherit; font-size:12px; width:5.5rem; }
+  .pill { border:1px solid var(--line); border-radius:10px; padding:.05rem .5rem; font-size:12px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .muted { color:var(--muted); }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:.5rem;
+        max-height:22rem; overflow:auto; font-size:12px; margin:0; white-space:pre-wrap; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
+  .chart figcaption { color:var(--muted); font-size:12px; margin-bottom:.25rem; }
+  .row { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RORCH</h1>
+  <span id="globals" class="muted">loading…</span>
+  <span style="flex:1"></span>
+  <span id="stamp" class="muted"></span>
+  <button id="toggle-pause">pause all</button>
+</header>
+
+<main>
+  <section>
+    <h2>Pools</h2>
+    <div class="wrap"><table id="pools">
+      <thead><tr>
+        <th>pool</th><th>target</th><th>state</th><th>containers</th><th>online</th>
+        <th>idle</th><th>busy</th><th>queued</th><th>max</th><th>min idle</th>
+        <th>tick</th><th>actions</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Runner containers</h2>
+    <div class="wrap"><table id="containers">
+      <thead><tr>
+        <th>name</th><th>image</th><th>age</th><th>docker</th><th>github</th><th>actions</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>History <span class="muted" id="hours-label"></span></h2>
+    <div class="charts" id="charts"></div>
+  </section>
+
+  <section>
+    <h2>Events</h2>
+    <div class="wrap"><table id="events">
+      <thead><tr><th>when</th><th>event</th><th>pool</th><th>container</th><th>reason</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="logs-panel" hidden>
+    <h2>Logs — <span id="logs-name"></span> <button id="logs-close">close</button></h2>
+    <pre id="logs"></pre>
+  </section>
+</main>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+let paused = false;
+
+async function api(path, options) {
+  const res = await fetch(path, {credentials: 'same-origin', ...options});
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).error || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return res;
+}
+
+async function post(path, body) {
+  try {
+    await api(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {}),
+    });
+  } catch (err) {
+    alert(err.message);
+  }
+  refresh();
+}
+
+const ago = (ts) => {
+  if (!ts) return '—';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  return Math.round(s / 3600) + 'h ago';
+};
+
+const cell = (html) => { const td = document.createElement('td'); td.innerHTML = html; return td; };
+
+function renderGlobals(g, rate) {
+  paused = g.paused;
+  const cap = g.max_total_runners ? `${g.total_containers}/${g.max_total_runners}` :
+                                    `${g.total_containers}/∞`;
+  const budget = rate && rate.remaining !== null && rate.remaining !== undefined
+    ? `github ${rate.remaining}` : 'github —';
+  const blocked = rate && rate.blocked_until ? ' <span class="bad">rate-limited</span>' : '';
+  $('#globals').innerHTML =
+    `<span class="pill">runners ${cap}</span> ` +
+    `<span class="pill">lifetime ${g.max_runner_lifetime || 0}m</span> ` +
+    `<span class="pill">${budget}</span>${blocked} ` +
+    (g.paused ? '<span class="pill bad">PAUSED</span>' : '');
+  $('#toggle-pause').textContent = g.paused ? 'resume all' : 'pause all';
+}
+
+function renderPools(pools) {
+  const body = $('#pools tbody');
+  body.innerHTML = '';
+  for (const p of pools) {
+    const c = p.config;
+    const state = p.paused ? '<span class="bad">paused</span>'
+                : p.draining ? '<span class="warn">draining</span>'
+                : '<span class="ok">active</span>';
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(`<strong>${c.name}</strong>`), cell(`<span class="muted">${c.display}</span>`),
+      cell(state), cell(p.containers), cell(p.online), cell(p.idle), cell(p.busy),
+      cell(p.queued > 0 ? `<span class="warn">${p.queued}</span>` : p.queued),
+      cell(`<input value="${c.max_runners}" data-field="max_runners" data-pool="${c.name}">`),
+      cell(`<input value="${c.min_idle}" data-field="min_idle" data-pool="${c.name}">`),
+      cell(`<span class="muted">${p.duration ? p.duration.toFixed(2) + 's' : '—'} · ${ago(p.last_tick)}</span>`),
+    );
+    const actions = document.createElement('td');
+    actions.className = 'row';
+    actions.innerHTML =
+      `<button data-act="pause" data-pool="${c.name}">${p.paused ? 'resume' : 'pause'}</button>` +
+      `<button data-act="drain" data-pool="${c.name}">${p.draining ? 'undrain' : 'drain'}</button>` +
+      `<button data-act="up" data-pool="${c.name}">+1</button>` +
+      `<button data-act="down" data-pool="${c.name}">−1</button>` +
+      `<button data-act="save" data-pool="${c.name}">save</button>` +
+      `<button data-act="reset" data-pool="${c.name}">reset</button>`;
+    tr.append(actions);
+    body.append(tr);
+  }
+}
+
+function renderContainers(containers) {
+  const body = $('#containers tbody');
+  body.innerHTML = '';
+  if (!containers.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">no runner containers</td></tr>';
+    return;
+  }
+  for (const c of containers) {
+    const gh = c.github && c.github.status
+      ? (c.github.busy ? '<span class="warn">busy</span>' : '<span class="ok">idle</span>')
+      : '<span class="muted">unknown</span>';
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(`${c.name}${c.protected ? ' <span class="pill">kept</span>' : ''}`),
+      cell(`<span class="muted">${c.image}</span>`), cell(c.running_for),
+      cell(`<span class="muted">${c.status}</span>`), cell(gh),
+    );
+    const actions = document.createElement('td');
+    actions.className = 'row';
+    actions.innerHTML =
+      `<button data-cact="logs" data-name="${c.name}">logs</button>` +
+      `<button data-cact="protect" data-name="${c.name}" data-on="${c.protected}">` +
+      `${c.protected ? 'unkeep' : 'keep'}</button>` +
+      `<button data-cact="restart" data-name="${c.name}">restart</button>` +
+      `<button class="bad" data-cact="stop" data-name="${c.name}">stop</button>`;
+    tr.append(actions);
+    body.append(tr);
+  }
+}
+
+function renderEvents(events) {
+  const body = $('#events tbody');
+  body.innerHTML = '';
+  for (const e of events) {
+    const tr = document.createElement('tr');
+    const cls = e.event.includes('fail') ? 'bad' : e.event.includes('kill') ? 'warn' : '';
+    tr.append(
+      cell(`<span class="muted">${ago(e.ts)}</span>`), cell(`<span class="${cls}">${e.event}</span>`),
+      cell(e.pool || '—'), cell(`<span class="muted">${e.container || '—'}</span>`),
+      cell(`<span class="muted">${e.reason || ''}</span>`),
+    );
+    body.append(tr);
+  }
+}
+
+// Inline SVG sparkline — a chart library would be the only build step in the repo.
+function sparkline(points, color) {
+  if (points.length < 2) return '<div class="muted">not enough history yet</div>';
+  const w = 260, h = 60, max = Math.max(1, ...points);
+  const step = w / (points.length - 1);
+  const path = points.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * h).toFixed(1)}`);
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="60" preserveAspectRatio="none">
+    <polyline fill="none" stroke="${color}" stroke-width="1.5" points="${path.join(' ')}"/>
+  </svg><div class="muted">peak ${max}</div>`;
+}
+
+function renderCharts(data) {
+  $('#hours-label').textContent = `· last ${data.hours}h`;
+  const series = {queued: [], containers: [], busy: []};
+  const byTs = new Map();
+  for (const s of data.snapshots) {
+    const bucket = Math.floor(s.ts / 60);
+    const acc = byTs.get(bucket) || {queued: 0, containers: 0, busy: 0};
+    acc.queued += s.queued; acc.containers += s.containers; acc.busy += s.busy;
+    byTs.set(bucket, acc);
+  }
+  for (const acc of [...byTs.keys()].sort().map((k) => byTs.get(k))) {
+    series.queued.push(acc.queued);
+    series.containers.push(acc.containers);
+    series.busy.push(acc.busy);
+  }
+  const counts = Object.entries(data.event_counts).sort();
+  $('#charts').innerHTML =
+    `<figure class="chart"><figcaption>queued jobs</figcaption>${sparkline(series.queued, '#d29922')}</figure>` +
+    `<figure class="chart"><figcaption>runner containers</figcaption>${sparkline(series.containers, '#4c8dff')}</figure>` +
+    `<figure class="chart"><figcaption>busy runners</figcaption>${sparkline(series.busy, '#3fb950')}</figure>` +
+    `<figure class="chart"><figcaption>events (${data.hours}h)</figcaption>` +
+    (counts.length
+      ? counts.map(([k, v]) => `<div>${k} <strong>${v}</strong></div>`).join('')
+      : '<div class="muted">none</div>') + '</figure>';
+}
+
+async function refresh() {
+  try {
+    const state = await (await api('/api/state')).json();
+    renderGlobals(state.globals, state.rate_limit);
+    renderPools(state.pools);
+    renderContainers(state.containers);
+    renderEvents(state.events);
+    $('#stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    $('#stamp').innerHTML = `<span class="bad">${err.message}</span>`;
+  }
+}
+
+async function refreshCharts() {
+  try {
+    renderCharts(await (await api('/api/history?hours=6')).json());
+  } catch (_) { /* charts are optional; the live view matters more */ }
+}
+
+document.addEventListener('click', async (event) => {
+  const btn = event.target.closest('button');
+  if (!btn) return;
+
+  if (btn.id === 'toggle-pause') return post('/api/pause', {paused: !paused});
+  if (btn.id === 'logs-close') return $('#logs-panel').setAttribute('hidden', '');
+
+  const pool = btn.dataset.pool;
+  if (pool) {
+    const row = btn.closest('tr');
+    const val = (field) => row.querySelector(`input[data-field="${field}"]`).value;
+    const cur = row.querySelector('td:nth-child(3)').textContent.trim();
+    switch (btn.dataset.act) {
+      case 'pause': return post(`/api/pools/${pool}/state`, {paused: cur !== 'paused'});
+      case 'drain': return post(`/api/pools/${pool}/state`, {draining: cur !== 'draining'});
+      case 'up': return post(`/api/pools/${pool}/scale`, {delta: 1});
+      case 'down': return post(`/api/pools/${pool}/scale`, {delta: -1});
+      case 'save':
+        try {
+          await api(`/api/config/pools/${pool}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({max_runners: val('max_runners'), min_idle: val('min_idle')}),
+          });
+        } catch (err) { alert(err.message); }
+        return refresh();
+      case 'reset':
+        if (!confirm(`Revert ${pool} to config.yml?`)) return;
+        try {
+          await api(`/api/config/pools/${pool}/overrides`, {method: 'DELETE'});
+        } catch (err) { alert(err.message); }
+        return refresh();
+    }
+  }
+
+  const name = btn.dataset.name;
+  if (!name) return;
+  switch (btn.dataset.cact) {
+    case 'logs': {
+      $('#logs-name').textContent = name;
+      $('#logs-panel').removeAttribute('hidden');
+      $('#logs').textContent = 'loading…';
+      try {
+        $('#logs').textContent = await (await api(`/api/containers/${name}/logs`)).text();
+      } catch (err) { $('#logs').textContent = err.message; }
+      return;
+    }
+    case 'protect':
+      return post(`/api/containers/${name}/protect`, {protected: btn.dataset.on !== 'true'});
+    case 'restart':
+    case 'stop': {
+      const act = btn.dataset.cact;
+      if (!confirm(`${act} ${name}?`)) return;
+      const res = await fetch(`/api/containers/${name}/${act}`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}),
+      });
+      if (res.status === 409) {
+        if (!confirm(`${name} is running a job. Abort it?`)) return refresh();
+        await post(`/api/containers/${name}/${act}`, {confirm: true, reason: 'operator override'});
+        return;
+      }
+      if (!res.ok) alert((await res.json()).error || res.statusText);
+      return refresh();
+    }
+  }
+});
+
+refresh();
+refreshCharts();
+setInterval(refresh, 5000);
+setInterval(refreshCharts, 60000);
+</script>
+</body>
+</html>

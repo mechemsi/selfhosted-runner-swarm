@@ -46,23 +46,99 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 ## Quick start
 
 ```bash
-# 1. Clone
 git clone https://github.com/your-org/rorch.git
 cd rorch
 
-# 2. Build the runner image (auto-detects host docker GID)
-./scripts/build-runner.sh
-
-# 3. Configure
-cp .env.example .env        # add your GITHUB_PAT
-cp example.config.yml config.yml  # define your pools
-
-# 4. Run
-docker-compose up -d
-
-# 5. Watch logs
-docker-compose logs -f orchestrator
+make setup      # scaffolds .env + config.yml, builds the runner image for this host
+# edit .env (GITHUB_PAT) and config.yml (your pools)
+make up         # start — prints the dashboard URL
+make logs       # follow the orchestrator
 ```
+
+`make help` lists every target. The main ones:
+
+| Target | Does |
+|--------|------|
+| `make setup` | First-time setup: scaffold config, generate a dashboard token, build the runner image |
+| `make up` / `make down` / `make restart` | Compose lifecycle |
+| `make logs` / `make ps` | Follow logs · list orchestrator and runner containers |
+| `make rebuild` | Rebuild the runner image and recreate the orchestrator |
+| `make update RUNNER_VERSION=x.y.z` | Move to a different runner agent and recreate |
+| `make dashboard` | Print the dashboard URL including the auth token |
+| `make check` | Everything CI runs: ruff, pyright, pytest |
+| `make build-images` | Validate both Dockerfiles build |
+
+<details>
+<summary>Manual equivalent, without make</summary>
+
+```bash
+./scripts/build-runner.sh
+cp .env.example .env               # add your GITHUB_PAT
+cp example.config.yml config.yml   # define your pools
+docker compose up -d
+docker compose logs -f orchestrator
+```
+</details>
+
+## Dashboard
+
+The orchestrator serves a web dashboard and JSON API on `127.0.0.1:8080`.
+
+```bash
+make dashboard      # prints http://127.0.0.1:8080/?token=…
+```
+
+It shows every pool (containers, online, idle, busy, queued, last tick), every runner
+container with what GitHub reports for it, the global cap and GitHub rate budget,
+lifecycle events, and history charts. From it you can stop or restart a runner, pause /
+resume / drain a pool, nudge a pool ±1, pause all provisioning, and edit pool limits —
+all applied on the next tick with no restart.
+
+> **⚠️ This port is root-equivalent on the host.** The orchestrator mounts
+> `/var/run/docker.sock`, so anything that can reach the API can start privileged
+> containers. `docker-compose.yml` publishes it on `127.0.0.1` only, the server refuses
+> to bind a non-loopback address without `RORCH_API_TOKEN`, and every mutating request is
+> recorded in an audit log. Put a real reverse proxy with its own auth in front before
+> exposing it beyond the host.
+
+### API
+
+Authenticate with `Authorization: Bearer $RORCH_API_TOKEN`.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/state` | Pools, containers, globals, rate budget, recent events |
+| `GET /api/history?hours=6` | Snapshot series and event counts for charts |
+| `GET /api/events` · `GET /api/audit` | Lifecycle events · who changed what |
+| `GET /metrics` | Prometheus text exposition (no client library needed) |
+| `POST /api/containers/{name}/stop\|restart` | Stop a runner (`confirm: true` required if busy) |
+| `POST /api/containers/{name}/protect` | Exempt a runner from the lifetime reaper |
+| `POST /api/pools/{name}/state` | `{paused, draining}` |
+| `POST /api/pools/{name}/scale` | `{delta: 1 \| -1}` |
+| `POST /api/pause` | Pause all provisioning |
+| `GET /api/config` · `PATCH /api/config/pools/{name}` | Read · override pool settings |
+| `DELETE /api/config/pools/{name}/overrides` | Revert a pool to `config.yml` |
+| `POST /api/config/pools` · `DELETE /api/config/pools/{name}` | Add · remove a pool |
+| `PATCH /api/config/globals` | `max_total_runners`, `max_runner_lifetime`, `paused` |
+| `GET /api/config/export` | Effective config as YAML, to copy back into `config.yml` |
+
+Send `Idempotency-Key: <uuid>` on any POST; a retry with the same key replays the first
+response instead of provisioning a second runner.
+
+PATs are never stored in the database and never appear in any response.
+
+### config.yml stays the default
+
+Settings changed from the dashboard are stored as an **overlay** in
+`/app/data/rorch.db` (the `rorch-data` volume). `config.yml` remains the baseline:
+
+- No override for a field → the `config.yml` value is used.
+- **Reset** in the UI (or `DELETE …/overrides`) drops the override row.
+- Deleting the database file reverts the orchestrator to exactly its `config.yml` behaviour.
+- Running with `RORCH_DB=off` disables the store and dashboard entirely.
+
+Pools created through the API name an environment variable for their PAT (`pat_env`), so
+secrets stay in `.env`.
 
 ## Configuration
 
@@ -77,6 +153,11 @@ docker-compose logs -f orchestrator
 | `GITHUB_RATE_LIMIT_RESERVE` | `100` | Stop before consuming the final PAT requests |
 | `REPO_CHECK_WORKERS` | `6` | Maximum repositories inspected concurrently |
 | `RUNNER_OPERATION_WORKERS` | `4` | Maximum concurrent runner removals and provisions |
+| `RORCH_API_TOKEN` | generated | Dashboard/API bearer token (`make setup` writes one) |
+| `RORCH_API_PORT` | `8080` | Dashboard port, published on `127.0.0.1` |
+| `HISTORY_RETENTION_DAYS` | `14` | Days of dashboard history kept (`0` disables pruning) |
+| `RORCH_DB` | — | Set to `off` to run without the store and dashboard |
+| `RUNNER_NETWORK_MODE` | `host` | Runner network namespace — `host` or `bridge` |
 
 Additional PATs can be defined for pools serving different accounts.
 
@@ -150,6 +231,53 @@ See [`example.config.yml`](example.config.yml) for detailed examples with commen
 | `cpu_limit` | CPU cores per runner (`0` = unlimited) |
 
 All runners also get `--pids-limit 512` to prevent fork bombs.
+
+### Runner agent versions
+
+The agent version is baked into the image at build time. Images are tagged by version, and
+`gh-runner:latest` follows the newest:
+
+```bash
+./scripts/build-runner.sh                          # newest → gh-runner:2.335.1 + gh-runner:latest
+RUNNER_VERSION=2.328.0 ./scripts/build-runner.sh   # older  → gh-runner:2.328.0 only
+```
+
+Pools default to `gh-runner:latest`. A pool needing an older agent pins it:
+
+```yaml
+- name: legacy-ci
+  owner: acme
+  runner_image: gh-runner:2.328.0   # this pool only
+```
+
+If a pinned image is missing, the orchestrator's auto-build reads the version back out of the
+tag and passes it to the build, so a pinned pool never silently gets a different agent.
+
+> **The agent must be ≥ 2.327** for actions on the Node24 runtime (current `actions/*`,
+> `shivammathur/setup-php@v2`). Older agents fail with
+> `'using: node24' is not supported`. CI asserts this on every image build, and a weekly
+> job opens an issue when upstream moves ahead of the pinned version.
+
+### Runner networking and host port collisions
+
+Runners use the host network namespace by default. That means a job's `services:` containers
+bind **host** ports, so a workflow mapping `5432:5432` fails with
+`Bind for :::5432 failed: port is already allocated` if the host already runs Postgres.
+
+Three ways out, cheapest first:
+
+1. **Map around it in the workflow** — give the service a free host port
+   (`ports: ["0:5432"]` and read the assigned port), which is what most repos should do.
+2. **Isolate the pool** — `network_mode: bridge` gives its runners their own namespace, so
+   service containers no longer touch host ports. The trade-off: jobs can no longer reach
+   host services over `localhost`.
+3. **Dedicate a host** to that pool.
+
+```yaml
+- name: needs-services
+  owner: acme
+  network_mode: bridge      # default is "host"
+```
 
 ## Scaling logic
 

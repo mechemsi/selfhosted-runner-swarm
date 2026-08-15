@@ -32,6 +32,12 @@ class PoolConfig:
     runner_image: str = "gh-runner:latest"
     memory_limit: str = "2g"
     cpu_limit: float = 0.0
+    # "host" shares the host network namespace: a job's `services:` containers
+    # bind host ports and collide with anything already listening there (e.g. a
+    # host Postgres on 5432). "bridge" isolates the runner so service containers
+    # get their own namespace, at the cost of jobs no longer reaching host
+    # services over localhost. Default stays "host" — the historical behaviour.
+    network_mode: str = "host"
 
     @property
     def is_org_level(self) -> bool:
@@ -170,6 +176,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 runner_image=p.get("runner_image", global_image),
                 memory_limit=p.get("memory_limit", defaults.get("memory_limit", "2g")),
                 cpu_limit=float(p.get("cpu_limit", defaults.get("cpu_limit", 1.5))),
+                network_mode=str(
+                    p.get("network_mode", defaults.get("network_mode", "host"))
+                ).lower(),
             )
         )
     return pools
@@ -191,42 +200,49 @@ def _load_from_env() -> PoolConfig:
         min_idle=int(os.environ.get("MIN_IDLE", "0" if scope == "personal" else "1")),
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
         runner_image=os.environ.get("RUNNER_IMAGE", "gh-runner:latest"),
+        network_mode=os.environ.get("RUNNER_NETWORK_MODE", "host").lower(),
     )
+
+
+def validation_errors(pools: list[PoolConfig]) -> list[str]:
+    """Return one message per invalid pool setting; empty means the config is usable.
+
+    Split out of `validate_pools` so the HTTP API can reject a bad config change
+    with a 400 instead of killing the orchestrator process.
+    """
+    errors: list[str] = []
+    for p in pools:
+        if not p.pat or p.pat.startswith("${"):
+            errors.append(f"Pool '{p.name}': pat is missing or unresolved (got: '{p.pat}')")
+        if not p.owner:
+            errors.append(f"Pool '{p.name}': owner is required")
+        if p.scope not in {"organization", "personal", "repository"}:
+            errors.append(f"Pool '{p.name}': unsupported scope '{p.scope}'")
+        if p.scope == "personal" and p.repo:
+            errors.append(f"Pool '{p.name}': personal scope cannot also set repo")
+        if p.scope == "repository" and not p.repo:
+            errors.append(f"Pool '{p.name}': repository scope requires repo")
+        if p.repo_discovery_ttl < 0:
+            errors.append(f"Pool '{p.name}': repo_discovery_ttl cannot be negative")
+        if p.github_poll_interval != 0 and not 15 <= p.github_poll_interval <= 3600:
+            errors.append(f"Pool '{p.name}': github_poll_interval must be 0 or between 15 and 3600")
+        if not 1 <= p.repo_check_workers <= 32:
+            errors.append(f"Pool '{p.name}': repo_check_workers must be between 1 and 32")
+        if not 1 <= p.runner_operation_workers <= 16:
+            errors.append(f"Pool '{p.name}': runner_operation_workers must be between 1 and 16")
+        if p.max_runners < 0:
+            errors.append(f"Pool '{p.name}': max_runners cannot be negative")
+        if p.min_idle < 0:
+            errors.append(f"Pool '{p.name}': min_idle cannot be negative")
+        if p.network_mode not in {"host", "bridge"}:
+            errors.append(f"Pool '{p.name}': network_mode must be 'host' or 'bridge'")
+    return errors
 
 
 def validate_pools(pools: list[PoolConfig]) -> None:
     """Validate pool configurations. Exits on failure."""
-    ok = True
-    for p in pools:
-        if not p.pat or p.pat.startswith("${"):
-            log.error("Pool '%s': pat is missing or unresolved (got: '%s')", p.name, p.pat)
-            ok = False
-        if not p.owner:
-            log.error("Pool '%s': owner is required", p.name)
-            ok = False
-        if p.scope not in {"organization", "personal", "repository"}:
-            log.error("Pool '%s': unsupported scope '%s'", p.name, p.scope)
-            ok = False
-        if p.scope == "personal" and p.repo:
-            log.error("Pool '%s': personal scope cannot also set repo", p.name)
-            ok = False
-        if p.scope == "repository" and not p.repo:
-            log.error("Pool '%s': repository scope requires repo", p.name)
-            ok = False
-        if p.repo_discovery_ttl < 0:
-            log.error("Pool '%s': repo_discovery_ttl cannot be negative", p.name)
-            ok = False
-        if p.github_poll_interval != 0 and not 15 <= p.github_poll_interval <= 3600:
-            log.error(
-                "Pool '%s': github_poll_interval must be 0 or between 15 and 3600",
-                p.name,
-            )
-            ok = False
-        if not 1 <= p.repo_check_workers <= 32:
-            log.error("Pool '%s': repo_check_workers must be between 1 and 32", p.name)
-            ok = False
-        if not 1 <= p.runner_operation_workers <= 16:
-            log.error("Pool '%s': runner_operation_workers must be between 1 and 16", p.name)
-            ok = False
-    if not ok:
+    errors = validation_errors(pools)
+    for message in errors:
+        log.error("%s", message)
+    if errors:
         sys.exit(1)

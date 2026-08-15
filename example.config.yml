@@ -21,9 +21,25 @@ max_total_runners: 0
 # work. 0 = disabled.
 max_runner_lifetime: 0
 
+# Settings below are the DEFAULT. The dashboard can override any of them at
+# runtime (stored in the rorch-data volume, not written back here); "reset" in
+# the UI drops the override and this file takes over again. Deleting the
+# database file reverts everything to exactly what is written here.
+
 defaults:
+  # gh-runner:latest is the newest agent built by scripts/build-runner.sh.
+  # Pin a pool to an older agent with runner_image: gh-runner:2.328.0 — see the
+  # "Runner agent versions" section in the README. Must be >= 2.327 for
+  # Node24-runtime actions.
   runner_image:  gh-runner:latest
   runner_labels: self-hosted,linux,x64,docker
+  # Runner network namespace:
+  #   host   (default) — jobs reach host services on localhost, but a job's
+  #                      `services:` containers bind HOST ports and collide with
+  #                      anything already listening (e.g. Postgres on 5432).
+  #   bridge           — isolates the runner, so service containers get their
+  #                      own namespace. Jobs lose localhost access to the host.
+  network_mode:  host
   max_runners:   3
   min_idle:      1
   github_poll_interval: 60      # minimum seconds between API scans for each pool

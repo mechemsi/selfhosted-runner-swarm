@@ -31,10 +31,27 @@ class RunnerAPIClient(Protocol):
     def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool: ...
 
 
+@dataclass(frozen=True)
+class ContainerInfo:
+    """One runner container as Docker reports it."""
+
+    name: str
+    image: str
+    status: str
+    running_for: str
+    minutes: float
+
+
 class ContainerManager(Protocol):
     """Interface for container lifecycle operations."""
 
     def running_containers(self, prefix: str) -> list[str]: ...
+
+    def container_details(self, prefix: str) -> list[ContainerInfo]: ...
+
+    def stop_container(self, name: str) -> bool: ...
+
+    def container_logs(self, name: str, tail: int = 200) -> str: ...
 
     def cleanup_exited(self, prefix: str) -> None: ...
 
@@ -43,6 +60,13 @@ class ContainerManager(Protocol):
         prefix: str,
         online_names: set[str],
         timeout_minutes: int = 3,
+    ) -> None: ...
+
+    def cleanup_aged(
+        self,
+        prefix: str,
+        max_minutes: int,
+        exclude: frozenset[str] = frozenset(),
     ) -> None: ...
 
     def spawn_runner(self, pool: PoolConfig) -> bool: ...

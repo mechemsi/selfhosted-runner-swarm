@@ -7,12 +7,24 @@ services:
     env_file: .env
     environment:
       - POLL_INTERVAL=${POLL_INTERVAL:-15}
+      - RORCH_API_HOST=${RORCH_API_HOST:-0.0.0.0}
+      - RORCH_API_PORT=${RORCH_API_PORT:-8080}
+      - RORCH_API_TOKEN=${RORCH_API_TOKEN:-}
+      - HISTORY_RETENTION_DAYS=${HISTORY_RETENTION_DAYS:-14}
+    # Loopback-only on the host: this port can start root containers through
+    # the mounted Docker socket. Publish it wider only behind a real proxy.
+    ports:
+      - "127.0.0.1:${RORCH_API_PORT:-8080}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # manage runner containers
       - ./config.yml:/app/config.yml:ro             # pool config (hot-reload on restart)
       - ./runner-image:/app/runner-image:ro         # build context: rebuilds gh-runner if missing
+      - rorch-data:/app/data                        # dashboard history + config overrides
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  rorch-data:

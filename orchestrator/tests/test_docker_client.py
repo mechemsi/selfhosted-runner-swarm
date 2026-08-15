@@ -3,6 +3,7 @@
 
 """Tests for Docker client helpers."""
 
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier, Lock
 from typing import ClassVar
@@ -10,7 +11,9 @@ from typing import ClassVar
 import pytest
 
 from rorch import docker_client
+from rorch.config import PoolConfig
 from rorch.docker_client import RUNNER_BUILD_CONTEXT, DockerClient, _parse_running_minutes
+from rorch.store import EVENT_MANUAL_STOP, SqliteStore
 
 
 class TestParseRunningMinutes:
@@ -164,3 +167,93 @@ class TestCleanupAged:
         client.cleanup_aged("gh-runner", 0)
         assert captured == []  # no docker call at all when disabled
         assert removed == []
+
+
+class TestContainerDetails:
+    _PS_OUTPUT = (
+        "gh-runner-tt-aaaaaaaa\tgh-runner:latest\tUp 4 minutes\t4 minutes ago\n"
+        "gh-runner-tt-bbbbbbbb\tgh-runner:2.328.0\tUp 2 hours\t2 hours ago\n"
+        "malformed-row-without-tabs\n"
+    )
+
+    def test_parses_rows_and_skips_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", lambda args: (self._PS_OUTPUT, 0))
+
+        details = client.container_details("gh-runner-tt")
+
+        assert [d.name for d in details] == ["gh-runner-tt-aaaaaaaa", "gh-runner-tt-bbbbbbbb"]
+        assert details[0].image == "gh-runner:latest"
+        assert details[1].minutes == 120.0
+
+    def test_empty_output_is_empty_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", lambda args: ("", 0))
+        assert client.container_details("gh-runner-tt") == []
+
+
+class TestStopContainer:
+    def test_removes_the_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            calls.append(args)
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+
+        assert client.stop_container("gh-runner-tt-aaaaaaaa") is True
+        assert calls == [["rm", "-f", "-v", "gh-runner-tt-aaaaaaaa"]]
+
+    def test_already_gone_counts_as_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`docker rm` failing because the container vanished is the desired end state."""
+
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            return ("", 0) if args[0] == "ps" else ("No such container", 1)
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+
+        assert client.stop_container("gh-runner-tt-aaaaaaaa") is True
+
+    def test_records_event_when_a_store_is_attached(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        store = SqliteStore(str(tmp_path / "rorch.db"))
+        client = DockerClient(store=store)
+        monkeypatch.setattr(client, "_capture", lambda args: ("", 0))
+
+        client.stop_container("gh-runner-tt-aaaaaaaa")
+
+        events = store.recent_events()
+        assert events[0]["event"] == EVENT_MANUAL_STOP
+        assert events[0]["pool"] == "tt"
+
+
+class TestNetworkMode:
+    def test_spawn_uses_the_configured_network(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "ensure_image", lambda image: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+
+        client.spawn_runner(replace(pool, network_mode="bridge"))
+
+        args = recorded[0]
+        assert args[args.index("--network") + 1] == "bridge"
+
+    def test_default_pool_still_uses_host_networking(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "ensure_image", lambda image: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+
+        client.spawn_runner(pool)
+
+        args = recorded[0]
+        assert args[args.index("--network") + 1] == "host"

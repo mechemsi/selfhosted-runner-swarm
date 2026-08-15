@@ -30,12 +30,19 @@ rorch/
 │   │   ├── protocols.py         # Protocol interfaces (DI)
 │   │   ├── github_client.py     # GitHub REST API client
 │   │   ├── docker_client.py     # Docker CLI container management
-│   │   └── scaler.py            # Scaling logic (PoolScaler)
+│   │   ├── scaler.py            # Scaling logic (PoolScaler)
+│   │   ├── store.py             # SQLite: history, overrides, control state, audit
+│   │   ├── resolver.py          # config.yml + DB overrides -> EffectiveConfig
+│   │   ├── server.py            # Flask dashboard/API in a daemon thread
+│   │   └── dashboard.html       # Single-page UI (no build step)
 │   └── tests/
 │       ├── conftest.py          # Shared fixtures
 │       ├── test_config.py
 │       ├── test_docker_client.py
-│       └── test_scaler.py
+│       ├── test_scaler.py
+│       ├── test_store.py
+│       ├── test_resolver.py
+│       └── test_server.py
 ├── runner-image/
 │   ├── Dockerfile
 │   └── entrypoint.sh
@@ -47,18 +54,25 @@ rorch/
 
 ## Running the project
 
-Everything runs in Docker.
+Everything runs in Docker. Use the Makefile — it is the one entrypoint.
 
 ```bash
-docker build -t gh-runner:latest ./runner-image
-docker-compose up -d
-docker-compose logs -f orchestrator
+make setup     # scaffold .env + config.yml, build the runner image for this host's docker GID
+make up        # start (prints the dashboard URL)
+make logs
 ```
 
 ## Development
 
 ```bash
-# In orchestrator/ directory (or use docker):
+make check         # ruff + ruff format --check + pyright + pytest, all inside docker
+make fmt           # apply ruff fixes and formatting
+make build-images  # validate both Dockerfiles build
+```
+
+Raw equivalent if you need it:
+
+```bash
 docker run --rm -v $(pwd)/orchestrator:/app -w /app python:3.12 bash -c "
   pip install -e '.[dev]' &&
   ruff check rorch/ tests/ &&
@@ -74,7 +88,14 @@ docker run --rm -v $(pwd)/orchestrator:/app -w /app python:3.12 bash -c "
 - **Dependency Inversion**: `PoolScaler` depends on `RunnerAPIClient` and `ContainerManager` protocols, not concrete classes
 - **Interface Segregation**: Protocols define minimal method sets
 
-Flow: `__main__.py` → creates `GitHubClient` + `DockerClient` → injects into `PoolScaler` → calls `tick()` per pool per interval
+Flow: `__main__.py` → opens `SqliteStore` → creates `GitHubClient` + `DockerClient` → injects into `PoolScaler` → starts the Flask API thread → each interval calls `ConfigResolver.resolve()` then `tick()` per pool
+
+### Dashboard layering
+
+- `config.yml` is always the baseline. `store.py` holds an **overlay**; `resolver.py` merges them into an `EffectiveConfig` rebuilt every tick.
+- **An empty (or absent) database must behave exactly like the pre-dashboard orchestrator.** Every store call site treats `store is None` as "carry on", and store failures are logged at debug level rather than breaking a tick. Keep it that way.
+- PATs never enter the database. Pools created through the API store `pat_env` (an environment variable name) and resolve the secret at tick time.
+- The API port is root-equivalent (Docker socket). Loopback-only by default; `server.start()` refuses a non-loopback bind without a token.
 
 ## Key formulas
 
@@ -92,11 +113,25 @@ desired = min(max_runners, max(min_idle, busy + queued))
 
 ## Before committing changes to runner-image/
 
-Always verify the runner image builds successfully before committing:
+Docker builds **are** covered in CI now:
+
+- `docker-lint` runs `docker buildx build --check` plus hadolint on both Dockerfiles on every PR touching them.
+- `docker-build-scan` builds both images for real, gated on `lint` + `test-unit`, and asserts the runner agent is ≥ 2.327 (Node24 support). It runs on GitHub-hosted runners by default; set the repository variable `SELF_HOSTED_BUILDS=true` to move it onto this project's own runners.
+
+Still verify locally before pushing — the runner image build is slow and its failures are
+easier to read on your own machine:
 ```bash
-docker build -t gh-runner:test ./runner-image
+make build-images
 ```
-Docker builds are not in CI (too slow for GitHub-hosted runners), so this must be tested locally.
+
+## CI
+
+`.ci-profile.yml` records the declared signals (no deploy target, not consumed as a
+dependency, GitHub Actions, hosted-by-default runners) and, importantly, the detection rows
+that deliberately do **not** apply. Read it before adding a job "for completeness".
+
+`repo-rules` in CI enforces the "What NOT to do" list below by grep — if you change one of
+those rules here, update that job too.
 
 ## What NOT to do
 
@@ -105,3 +140,5 @@ Docker builds are not in CI (too slow for GitHub-hosted runners), so this must b
 - Don't make runners non-ephemeral — the scaling logic depends on ephemeral behavior
 - Don't change container naming format without updating the prefix-based filtering
 - Don't add direct dependencies between `github_client.py` and `docker_client.py` — they communicate through `scaler.py`
+- Don't let the dashboard become required: no store must still mean a working orchestrator
+- Don't write a PAT into the database or return one from the API
