@@ -170,10 +170,13 @@ jobs:
           python-version: "3.12"
 
       - name: Audit dependencies
+        # Audit the declared runtime dependencies, not the installed
+        # environment: installing rorch itself makes pip-audit try to look up a
+        # local, unpublished package on PyPI, and --strict turns that
+        # "could not audit" into a failure.
         run: |
           pip install pip-audit
-          pip install -e .
-          pip-audit --strict
+          pip-audit --strict -r requirements.txt
 
   # Cheap Dockerfile validation that runs everywhere: catches syntax errors,
   # bad instruction order and lint violations without executing the build.
@@ -196,13 +199,13 @@ jobs:
       # Advisory: the runner image deliberately keeps build-essential and pins
       # apt versions loosely. Promote once the reported findings are triaged.
       - name: Hadolint (orchestrator)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.4.0
         continue-on-error: true
         with:
           dockerfile: orchestrator/Dockerfile
 
       - name: Hadolint (runner image)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.4.0
         continue-on-error: true
         with:
           dockerfile: runner-image/Dockerfile
@@ -286,7 +289,7 @@ jobs:
       # clean report is unrealistic. Promote to blocking on CRITICAL-only once
       # the current findings are triaged.
       - name: Scan orchestrator image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           image-ref: gh-runner-orchestrator:ci-${{ github.sha }}
