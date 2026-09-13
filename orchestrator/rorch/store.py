@@ -488,13 +488,18 @@ class Store:
         return [dict(row) for row in rows]
 
 
-def open_store(url: str) -> Store | None:
+def open_store(url: str, wait: float = 60.0) -> Store | None:
     """Open the store, returning None if it is unusable.
 
     A broken database must never stop runners from being provisioned, so this
     degrades to the pre-database behaviour instead of raising. That matters more
     with MariaDB than it did with a local file: a database outage should cost
     the dashboard, not the runners.
+
+    MariaDB gets ``wait`` seconds to come up first. After a host reboot Docker
+    restarts containers itself, ignoring compose's ``depends_on``, so the
+    orchestrator routinely starts before the database accepts connections — and
+    giving up then left the dashboard API off until someone restarted it.
     """
     try:
         dsn = parse_dsn(url)
@@ -502,7 +507,17 @@ def open_store(url: str) -> Store | None:
             from pathlib import Path
 
             Path(dsn.path).parent.mkdir(parents=True, exist_ok=True)
-        return Store(url)
+        # ponytail: fixed 2s poll; bad credentials also burn the full wait
+        # before degrading, which only costs startup time.
+        deadline = time.monotonic() + (wait if dsn.is_mariadb else 0)
+        while True:
+            try:
+                return Store(url)
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                log.warning("State store at %s not reachable yet — retrying", dsn.describe())
+                time.sleep(2)
     except Exception:
         try:
             target = parse_dsn(url).describe()
