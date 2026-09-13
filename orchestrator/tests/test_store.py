@@ -36,6 +36,24 @@ class TestSchema:
         blocker.write_text("not a directory")
         assert open_store(str(blocker / "sub" / "rorch.db")) is None
 
+    def test_open_store_waits_for_mariadb_to_accept_connections(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # After a host reboot the orchestrator can start before MariaDB is up.
+        opened = object()
+        attempts: list[str] = []
+
+        def refuse_twice(url: str) -> object:
+            attempts.append(url)
+            if len(attempts) < 3:
+                raise ConnectionRefusedError
+            return opened
+
+        monkeypatch.setattr("rorch.store.Store", refuse_twice)
+        monkeypatch.setattr("rorch.store.time.sleep", lambda _seconds: None)
+        assert open_store("mysql://rorch:pw@mariadb:3306/rorch") is opened
+        assert len(attempts) == 3
+
 
 class TestHistory:
     def test_records_and_reads_ticks(self, store: Store) -> None:
