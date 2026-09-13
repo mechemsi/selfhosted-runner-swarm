@@ -14,7 +14,9 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000
+# The standalone server binds $HOSTNAME, which Docker sets to the container ID —
+# so it never listened on 127.0.0.1 and the HEALTHCHECK below always failed.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 # Standalone output ships only the traced dependencies, not all of
 # node_modules — a smaller image and a smaller attack surface next to a host
 # running the Docker socket.
