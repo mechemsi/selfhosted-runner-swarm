@@ -245,7 +245,7 @@ The agent version is baked into the image at build time. Images are tagged by ve
 `gh-runner:latest` follows the newest:
 
 ```bash
-./scripts/build-runner.sh                          # newest → gh-runner:2.335.1 + gh-runner:latest
+./scripts/build-runner.sh                          # newest → gh-runner:2.337.0 + gh-runner:latest
 RUNNER_VERSION=2.328.0 ./scripts/build-runner.sh   # older  → gh-runner:2.328.0 only
 ```
 
