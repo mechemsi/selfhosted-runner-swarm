@@ -10,7 +10,7 @@ SHELL := /usr/bin/env bash
 COMPOSE      := docker compose
 PY_IMAGE     := python:3.12
 ORCHESTRATOR := $(CURDIR)/orchestrator
-RUNNER_VERSION ?= 2.335.1
+RUNNER_VERSION ?= 2.337.0
 API_PORT     ?= 8080
 
 .PHONY: help setup up down restart logs ps rebuild update runner-image \
