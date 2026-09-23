@@ -13,7 +13,7 @@ import pytest
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.github_client import GitHubClient
-from rorch.protocols import RunnerInfo
+from rorch.protocols import JobInfo, RunnerInfo
 
 
 def _repo(name: str, owner: str = "test-user", **overrides: object) -> dict[str, object]:
@@ -272,3 +272,87 @@ class TestPublicRepoDetection:
     ) -> None:
         pool = PoolConfig(name="p", pat="ghp_x", owner="acme", repo="api")
         assert self._client(None, monkeypatch).is_public_repo(pool) is None
+
+
+def _scan_client(responses: dict[str, object]) -> GitHubClient:
+    """A client whose GET returns the response of the first path fragment that matches."""
+    client = GitHubClient()
+
+    def fake_get(pat: str, path: str) -> object:
+        for fragment, data in responses.items():
+            if fragment in path:
+                return data
+        raise AssertionError(f"unexpected request {path}")
+
+    client._get = fake_get  # type: ignore[method-assign]
+    return client
+
+
+_RUNS = {"workflow_runs": [{"id": 1, "name": "ci"}]}
+_JOBS = {"jobs": [{"id": 10, "status": "queued"}, {"id": 11, "status": "completed"}]}
+
+
+class TestQueuedCount:
+    """A failed GitHub request must not pass for 'nothing queued'.
+
+    The count stays a best-effort number (the scaler only scales up, so a partial count still
+    provisions more than skipping the pool would), but an incomplete scan says so.
+    """
+
+    def test_counts_queued_jobs_and_collects_the_rest(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=queued": _RUNS,
+                "status=in_progress": {"workflow_runs": []},
+                "runs/1/jobs": _JOBS,
+            }
+        )
+        jobs: list[JobInfo] = []
+
+        assert client.get_queued_count(pool, jobs) == 1
+        assert [job.job_id for job in jobs] == [11]
+
+    def test_clean_scan_logs_no_warning(
+        self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client({"actions/runs?": {"workflow_runs": []}})
+
+        assert client.get_queued_count(pool) == 0
+        assert "lower bound" not in caplog.text
+
+    def test_failed_runs_request_keeps_partial_count_and_warns(
+        self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client(
+            {"status=queued": _RUNS, "status=in_progress": None, "runs/1/jobs": _JOBS}
+        )
+
+        assert client.get_queued_count(pool) == 1
+        assert "1 GitHub request(s) failed" in caplog.text
+        assert "lower bound" in caplog.text
+
+    def test_failed_jobs_request_warns(
+        self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client(
+            {"status=queued": _RUNS, "status=in_progress": {}, "runs/1/jobs": None}
+        )
+
+        assert client.get_queued_count(pool) == 0
+        assert "lower bound" in caplog.text
+
+    def test_failed_org_repo_listing_warns(
+        self, org_pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client({"/orgs/": None})
+
+        assert client.get_queued_count(org_pool) == 0
+        assert "lower bound" in caplog.text
+
+    def test_failed_personal_repo_listing_warns(
+        self, personal_pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client({"/user/repos": None})
+
+        assert client.get_queued_count(personal_pool) == 0
+        assert "lower bound" in caplog.text
