@@ -30,7 +30,10 @@ export default function Pools({ pools, role, act, refresh }: Props) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) alert(((await res.json()) as { error?: string }).error ?? res.statusText);
+    if (!res.ok) {
+      alert(((await res.json()) as { error?: string }).error ?? res.statusText);
+      return; // keep the typed values so they can be corrected and saved again
+    }
     setEdits((e) => ({ ...e, [pool.config.name]: {} }));
     await refresh();
   }
