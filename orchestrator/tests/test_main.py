@@ -197,3 +197,15 @@ def test_failed_history_prune_does_not_stop_the_loop(wired: Wired) -> None:
     wired.run_one_tick()
 
     assert wired.sleeps == [900]
+
+
+def test_banner_never_logs_any_part_of_a_pat(
+    wired: Wired, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+
+    wired.run_one_tick()
+
+    for pool in wired.pools:
+        assert pool.pat[:8] not in caplog.text
+    assert "PAT: SET" in caplog.text
