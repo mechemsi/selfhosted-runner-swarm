@@ -25,5 +25,9 @@ Master index for project documentation.
 
 - [001 — config.yml stays the default, the database is only an overlay](decisions/001-config-yml-stays-the-default.md) — Why runtime config edits are an overlay rather than a rewrite or a new source of truth.
 
+## Audits
+
+- [Code-quality audit against clean-code limits](audits/2026-09-23-code-check.md) — What #13–#16 fixed and the ranked hotspots still over a ceiling.
+
 ## Runbooks
 _No runbooks yet. Create one for repeated operational processes._
