@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from rorch.store import EVENT_SPAWN, EVENT_STUCK_KILL, Store, open_store
+from rorch.store import EVENT_SPAWN, EVENT_STUCK_KILL, Store, TickSnapshot, open_store
 
 
 @pytest.fixture
@@ -57,14 +57,47 @@ class TestSchema:
 
 class TestHistory:
     def test_records_and_reads_ticks(self, store: Store) -> None:
-        store.record_tick("pool-a", "org/repo", 2, 2, 1, 1, 3, 0.5)
+        store.record_tick(
+            TickSnapshot(
+                pool="pool-a",
+                display="org/repo",
+                containers=2,
+                online=2,
+                idle=1,
+                busy=1,
+                queued=3,
+                duration=0.5,
+            )
+        )
         latest = store.latest_snapshots()
         assert latest["pool-a"]["containers"] == 2
         assert latest["pool-a"]["queued"] == 3
 
     def test_latest_snapshot_wins_per_pool(self, store: Store) -> None:
-        store.record_tick("pool-a", "org/repo", 1, 1, 1, 0, 0, 0.1)
-        store.record_tick("pool-a", "org/repo", 5, 5, 0, 5, 2, 0.2)
+        store.record_tick(
+            TickSnapshot(
+                pool="pool-a",
+                display="org/repo",
+                containers=1,
+                online=1,
+                idle=1,
+                busy=0,
+                queued=0,
+                duration=0.1,
+            )
+        )
+        store.record_tick(
+            TickSnapshot(
+                pool="pool-a",
+                display="org/repo",
+                containers=5,
+                online=5,
+                idle=0,
+                busy=5,
+                queued=2,
+                duration=0.2,
+            )
+        )
         assert store.latest_snapshots()["pool-a"]["containers"] == 5
 
     def test_event_counts_group_by_event(self, store: Store) -> None:
@@ -74,11 +107,33 @@ class TestHistory:
         assert store.event_counts_since(1) == {EVENT_SPAWN: 2, EVENT_STUCK_KILL: 1}
 
     def test_snapshots_since_excludes_older_rows(self, store: Store) -> None:
-        store.record_tick("pool-a", "org/repo", 1, 1, 1, 0, 0, 0.1)
+        store.record_tick(
+            TickSnapshot(
+                pool="pool-a",
+                display="org/repo",
+                containers=1,
+                online=1,
+                idle=1,
+                busy=0,
+                queued=0,
+                duration=0.1,
+            )
+        )
         store._write(  # pyright: ignore[reportPrivateUsage]
             "UPDATE tick_snapshots SET ts = ?", (time.time() - 7200,)
         )
-        store.record_tick("pool-a", "org/repo", 9, 9, 9, 0, 0, 0.1)
+        store.record_tick(
+            TickSnapshot(
+                pool="pool-a",
+                display="org/repo",
+                containers=9,
+                online=9,
+                idle=9,
+                busy=0,
+                queued=0,
+                duration=0.1,
+            )
+        )
         recent = store.snapshots_since(0.5)
         assert [row["containers"] for row in recent] == [9]
 
