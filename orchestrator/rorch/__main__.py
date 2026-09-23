@@ -127,10 +127,8 @@ def _log_pool(pool: PoolConfig) -> None:
         pool.min_idle,
         _pool_scope(pool),
     )
-    if len(pool.pat) > 20:
-        log.info("    PAT: %s...", pool.pat[:20])
-    else:
-        log.info("    PAT: %s", "SET" if pool.pat else "MISSING")
+    # Never any part of the token: 20 characters was half of a 40-character ghp_ PAT, in plain logs.
+    log.info("    PAT: %s", "SET" if pool.pat else "MISSING")
 
 
 def _pool_scope(pool: PoolConfig) -> str:
