@@ -21,7 +21,7 @@ from rorch.server import (
     resolve_token,
     start,
 )
-from rorch.store import Store
+from rorch.store import Store, TickSnapshot
 
 
 @pytest.fixture
@@ -102,7 +102,18 @@ class TestState:
     def test_state_reports_pools_and_containers(
         self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:
-        store.record_tick(pool.name, pool.display, 2, 2, 1, 1, 4, 0.3)
+        store.record_tick(
+            TickSnapshot(
+                pool=pool.name,
+                display=pool.display,
+                containers=2,
+                online=2,
+                idle=1,
+                busy=1,
+                queued=4,
+                duration=0.3,
+            )
+        )
         body = _json(client.get("/api/state"))
 
         assert body["pools"][0]["config"]["name"] == pool.name
@@ -288,7 +299,18 @@ class TestMetrics:
     def test_prometheus_exposition(
         self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:
-        store.record_tick(pool.name, pool.display, 2, 2, 1, 1, 3, 0.3)
+        store.record_tick(
+            TickSnapshot(
+                pool=pool.name,
+                display=pool.display,
+                containers=2,
+                online=2,
+                idle=1,
+                busy=1,
+                queued=3,
+                duration=0.3,
+            )
+        )
         body = client.get("/metrics").get_data(as_text=True)
 
         assert 'rorch_pool_containers{pool="test-pool"} 2' in body

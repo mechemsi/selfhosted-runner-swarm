@@ -70,6 +70,24 @@ EVENT_MANUAL_STOP = "manual_stop"
 
 
 @dataclass(frozen=True)
+class TickSnapshot:
+    """One pool's state after a scaling tick, as written to the history table.
+
+    A value object rather than six positional ints: `containers, online, idle, busy, queued` are
+    all counts, so swapped arguments would type-check and quietly write the wrong history.
+    """
+
+    pool: str
+    display: str
+    containers: int
+    online: int
+    idle: int
+    busy: int
+    queued: int
+    duration: float
+
+
+@dataclass(frozen=True)
 class PoolState:
     """Operator-set control flags for one pool."""
 
@@ -155,22 +173,22 @@ class Store:
 
     # ── history ────────────────────────────────────────────────────────────
 
-    def record_tick(
-        self,
-        pool: str,
-        display: str,
-        containers: int,
-        online: int,
-        idle: int,
-        busy: int,
-        queued: int,
-        duration: float,
-    ) -> None:
+    def record_tick(self, tick: TickSnapshot) -> None:
         self._write(
             "INSERT INTO tick_snapshots"
             " (ts, pool, display, containers, online, idle, busy, queued, duration)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
-            (time.time(), pool, display, containers, online, idle, busy, queued, duration),
+            (
+                time.time(),
+                tick.pool,
+                tick.display,
+                tick.containers,
+                tick.online,
+                tick.idle,
+                tick.busy,
+                tick.queued,
+                tick.duration,
+            ),
         )
 
     def record_event(

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
-from rorch.store import EVENT_DEREGISTER, PoolState, Store
+from rorch.store import EVENT_DEREGISTER, PoolState, Store, TickSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -484,14 +484,16 @@ class PoolScaler:
             return
         try:
             self._store.record_tick(
-                pool=inspection.pool.name,
-                display=inspection.pool.display,
-                containers=inspection.running,
-                online=inspection.online,
-                idle=inspection.idle,
-                busy=inspection.busy,
-                queued=inspection.queued,
-                duration=inspection.duration_seconds,
+                TickSnapshot(
+                    pool=inspection.pool.name,
+                    display=inspection.pool.display,
+                    containers=inspection.running,
+                    online=inspection.online,
+                    idle=inspection.idle,
+                    busy=inspection.busy,
+                    queued=inspection.queued,
+                    duration=inspection.duration_seconds,
+                )
             )
         except Exception:
             log.debug("Could not record snapshot for %s", inspection.pool.name, exc_info=True)
