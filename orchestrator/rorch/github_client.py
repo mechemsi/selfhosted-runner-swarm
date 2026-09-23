@@ -13,7 +13,7 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
@@ -33,6 +33,17 @@ class ConditionalResponse:
 
     etag: str
     data: Any
+
+
+@dataclass(frozen=True)
+class QueueScan:
+    """Queued jobs found, and GitHub requests that failed while looking (`queued` is a floor)."""
+
+    queued: int = 0
+    failed: int = 0
+
+    def __add__(self, other: Self) -> Self:
+        return type(self)(self.queued + other.queued, self.failed + other.failed)
 
 
 def _job_info(job: dict[str, Any], run: dict[str, Any], repo: str) -> JobInfo:
@@ -328,13 +339,42 @@ class GitHubClient:
             return None
         return not data["private"]
 
-    def get_queued_jobs_for_repo(
-        self,
-        pat: str,
-        owner: str,
-        repo: str,
-        jobs: list[JobInfo] | None = None,
-    ) -> int:
+    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
+        """Count all queued jobs for a pool (single repo or entire org).
+
+        Pass `jobs` to also collect the running/finished jobs seen on the way. A request that fails
+        makes the count a lower bound rather than aborting it: the scaler only scales up, so acting
+        on what was counted still provisions more than skipping the pool would.
+        """
+        scan = self._scan_queue(pool, jobs)
+        if scan.failed:
+            log.warning(
+                "[%s] Queue scan incomplete: %d GitHub request(s) failed; "
+                "queued=%d is a lower bound",
+                pool.name,
+                scan.failed,
+                scan.queued,
+            )
+        return scan.queued
+
+    def _scan_queue(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> QueueScan:
+        if pool.repo:
+            return self._scan_repo(pool.pat, pool.owner, pool.repo, jobs)
+        repositories = self._pool_repositories(pool)
+        if repositories is None:
+            return QueueScan(failed=1)
+        scans = (self._scan_repo(pool.pat, pool.owner, repo, jobs) for repo in repositories)
+        return sum(scans, QueueScan())
+
+    def _pool_repositories(self, pool: PoolConfig) -> list[str] | None:
+        if pool.is_personal_level:
+            return self.list_repositories(pool)
+        repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")
+        if not isinstance(repos, list):
+            return None
+        return [repo["name"] for repo in repos]
+
+    def _scan_repo(self, pat: str, owner: str, repo: str, jobs: list[JobInfo] | None) -> QueueScan:
         """Count jobs waiting for a runner in a single repo.
 
         When `jobs` is supplied, every non-queued job seen along the way is
@@ -342,51 +382,33 @@ class GitHubClient:
         already fetches the full job payload to count the queued ones, so
         recording the rest costs no extra API requests.
         """
-        total = 0
+        scan = QueueScan()
         for status in ("queued", "in_progress"):
             runs_data = self._get(
                 pat, f"/repos/{owner}/{repo}/actions/runs?status={status}&per_page=50"
             )
-            if not runs_data:
+            if runs_data is None:
+                scan += QueueScan(failed=1)
                 continue
             for run in runs_data.get("workflow_runs", []):
-                run_id = run["id"]
-                jobs_data = self._get(
-                    pat,
-                    f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=50",
-                )
-                if not jobs_data:
-                    continue
-                for job in jobs_data.get("jobs", []):
-                    if job.get("status") == "queued":
-                        total += 1
-                    elif jobs is not None:
-                        jobs.append(_job_info(job, run, repo))
-        return total
+                scan += self._scan_run(pat, owner, repo, run, jobs)
+        return scan
 
-    def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
-        """Count all queued jobs for a pool (single repo or entire org).
-
-        Pass `jobs` to also collect the running/finished jobs seen on the way.
-        """
-        if pool.repo:
-            return self.get_queued_jobs_for_repo(pool.pat, pool.owner, pool.repo, jobs)
-
-        if pool.is_personal_level:
-            repositories = self.list_repositories(pool) or []
-            return sum(
-                self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo, jobs)
-                for repo in repositories
-            )
-
-        repos = self._get(pool.pat, f"/orgs/{pool.owner}/repos?per_page=100&type=all")
-        if not repos or not isinstance(repos, list):
-            return 0
-
-        total = 0
-        for repo in repos:
-            total += self.get_queued_jobs_for_repo(pool.pat, pool.owner, repo["name"], jobs)
-        return total
+    def _scan_run(
+        self, pat: str, owner: str, repo: str, run: dict[str, Any], jobs: list[JobInfo] | None
+    ) -> QueueScan:
+        jobs_data = self._get(
+            pat, f"/repos/{owner}/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=50"
+        )
+        if jobs_data is None:
+            return QueueScan(failed=1)
+        queued = 0
+        for job in jobs_data.get("jobs", []):
+            if job.get("status") == "queued":
+                queued += 1
+            elif jobs is not None:
+                jobs.append(_job_info(job, run, repo))
+        return QueueScan(queued=queued)
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         """Fetch runner state once for cleanup and scaling decisions."""
