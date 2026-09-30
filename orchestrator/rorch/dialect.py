@@ -122,6 +122,9 @@ def _split(script: str) -> list[str]:
     return [s.strip() for s in script.split(";") if s.strip()]
 
 
+# idx_snapshots_pool_id: latest_snapshots() is MAX(id) per pool, and without
+# (pool, id) it scans every snapshot ever taken (2.4M rows, ~2s, behind the
+# store lock, so every dashboard request queued behind it).
 _SQLITE_SCHEMA = _split(
     """
 CREATE TABLE IF NOT EXISTS tick_snapshots (
@@ -138,6 +141,7 @@ CREATE TABLE IF NOT EXISTS tick_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON tick_snapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_snapshots_pool_ts ON tick_snapshots(pool, ts);
+CREATE INDEX IF NOT EXISTS idx_snapshots_pool_id ON tick_snapshots(pool, id);
 CREATE TABLE IF NOT EXISTS runner_events (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     ts        REAL NOT NULL,
@@ -226,7 +230,8 @@ CREATE TABLE IF NOT EXISTS tick_snapshots (
     queued     INT NOT NULL,
     duration   DOUBLE NOT NULL DEFAULT 0,
     INDEX idx_snapshots_ts (ts),
-    INDEX idx_snapshots_pool_ts (pool, ts)
+    INDEX idx_snapshots_pool_ts (pool, ts),
+    INDEX idx_snapshots_pool_id (pool, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS runner_events (
     id        BIGINT AUTO_INCREMENT PRIMARY KEY,
