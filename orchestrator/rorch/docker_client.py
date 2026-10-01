@@ -690,6 +690,20 @@ class DockerClient:
         if code == 0 and out:
             log.info("🧹 Build cache prune: %s", out)
 
+    def prune_networks(self, until: str = "30m") -> None:
+        """Remove networks no container uses, once older than ``until``.
+
+        Every job with service containers gets its own bridge network
+        (``github_network_*``, or a compose project's), and a cancelled or
+        crashed job leaves it behind. Docker's default address pools hold only
+        about 30 bridges; once they are used up every new job fails with "Docker
+        network create failed". ``until`` spares a job that has created its
+        network but not yet attached its first container.
+        """
+        out, code = self._capture(["network", "prune", "-f", "--filter", f"until={until}"])
+        if code == 0 and out:
+            log.info("🧹 Network prune: %s", " ".join(out.split()))
+
     def prune_volumes(self, max_age_hours: float = 5.0) -> None:
         """Remove dangling volumes older than max_age_hours."""
         out, _ = self._capture(["volume", "ls", "--filter", "dangling=true", "-q"])

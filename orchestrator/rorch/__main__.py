@@ -182,6 +182,13 @@ def _tick(runtime: Runtime) -> None:
     except Exception:
         log.error("Aged-runner cleanup failed", exc_info=True)
 
+    # Every tick, not housekeeping: ~30 leaked job networks exhaust Docker's
+    # address pools, and that can happen well inside one housekeeping interval.
+    try:
+        runtime.docker.prune_networks()
+    except Exception:
+        log.error("Network prune failed", exc_info=True)
+
 
 def _tick_pools(scaler: PoolScaler, effective: EffectiveConfig) -> None:
     for pool in effective.pools:

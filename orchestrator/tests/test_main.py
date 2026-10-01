@@ -137,6 +137,20 @@ def test_failed_aged_cleanup_does_not_stop_the_loop(wired: Wired) -> None:
     assert wired.sleeps == [900]
 
 
+def test_every_tick_prunes_unused_networks(wired: Wired) -> None:
+    wired.run_one_tick()
+
+    wired.docker.prune_networks.assert_called_once_with()
+
+
+def test_failed_network_prune_does_not_stop_the_loop(wired: Wired) -> None:
+    wired.docker.prune_networks.side_effect = RuntimeError("docker down")
+
+    wired.run_one_tick()
+
+    assert wired.sleeps == [900]
+
+
 def test_housekeeping_prunes_docker_and_history(wired: Wired) -> None:
     wired.run_one_tick()
 
