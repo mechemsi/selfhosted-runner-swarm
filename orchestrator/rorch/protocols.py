@@ -77,7 +77,7 @@ class ContainerManager(Protocol):
         self,
         prefix: str,
         online_names: set[str],
-        timeout_minutes: int = 3,
+        timeout_minutes: int = 8,
     ) -> None: ...
 
     def cleanup_aged(

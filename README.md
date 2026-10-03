@@ -14,7 +14,7 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 - **Org, personal, or repo level** — discover personal repos automatically or target a fixed scope
 - **Docker-in-Docker** — runners can spin up containers inside workflows (via host socket)
 - **Ephemeral runners** — no stale state, clean environment every run
-- **Stuck detection** — kills containers that fail to register within 3 minutes
+- **Stuck detection**: kills containers that fail to register within `stuck_timeout` (8 minutes), never one running a job
 
 ## Architecture
 
@@ -166,6 +166,7 @@ secrets stay in `.env`.
 | `RORCH_DB` | — | Set to `off` to run without the store and dashboard |
 | `RUNNER_NETWORK_MODE` | `host` | Runner network namespace — `host` or `bridge` |
 | `RUNNER_WORK_TMPFS_SIZE` | `auto` | tmpfs size for the runner work dir (`0` = off) |
+| `STUCK_TIMEOUT` | `8` | Minutes a runner may take to come online before it is killed as stuck |
 | `CI_CONTAINER_MAX_AGE` | `360` | Minutes before leftover CI job containers are removed (`0` = off) |
 | `CI_CONTAINER_PATTERNS` | none | Comma-separated name globs or `label=KEY` marking extra CI containers |
 
@@ -382,9 +383,15 @@ rorch/
 - Look at runner container logs: `docker logs gh-runner-<pool>-<id>`
 
 **Runners killed as stuck:**
-- Default timeout is 3 minutes for registration
-- Slow networks or rate-limited APIs can cause this
-- Check orchestrator logs for "stuck" messages
+- A runner container that GitHub does not list as online or busy after `stuck_timeout` minutes
+  (default 8) is killed, unless a `Runner.Worker` process is alive in it (checked with
+  `docker top`; the listener only forks a worker for an accepted job). Under heavy load GitHub
+  can report working runners offline, so GitHub's flags alone are not trusted to kill.
+- If Docker cannot list a container's processes, it is spared for that tick;
+  `max_runner_lifetime` stays the backstop.
+- Slow registration (busy host, slow network, rate-limited APIs) needs a higher `stuck_timeout`,
+  per pool or under `defaults`
+- Check orchestrator logs for "Stuck" (killed) and "sparing it" (protected) messages
 
 **GitHub API rate limited:**
 - RORCH pauses automatically until GitHub's reset or retry time

@@ -284,8 +284,27 @@ class DockerClient:
 
         self._run_parallel(rm, rows, timeout=15)
 
-    def cleanup_stuck(self, prefix: str, online_names: set[str], timeout_minutes: int = 3) -> None:
-        """Kill containers that never came online within the timeout."""
+    def has_running_job(self, name: str) -> bool | None:
+        """Whether a Runner.Worker process (one per job) is alive in the container.
+
+        The listener only forks a worker once it has accepted a job, so this is
+        ground truth that GitHub's online/busy flags are not: under heavy load
+        GitHub reports working runners offline. None when Docker cannot say.
+        `docker top` reads the host process table; nothing is executed inside.
+        """
+        out, code = self._capture(["top", name])
+        if code != 0:
+            return None
+        return "Runner.Worker" in out
+
+    def cleanup_stuck(self, prefix: str, online_names: set[str], timeout_minutes: int = 8) -> None:
+        """Kill containers that never came online within the timeout.
+
+        A container running a job is spared even if GitHub does not list it, and
+        so is one whose processes Docker cannot inspect: killing a busy runner
+        fails its job, while sparing a stuck one only delays the reap a tick
+        (and max_runner_lifetime remains the backstop).
+        """
         out, _ = self._capture(
             [
                 "ps",
@@ -312,6 +331,16 @@ class DockerClient:
 
             minutes = _parse_running_minutes(running_for)
             if minutes is None or minutes < timeout_minutes:
+                continue
+
+            running_job = self.has_running_job(name)
+            if running_job is not False:
+                log.info(
+                    "  ⏳ %s not online on GitHub after %s but %s, sparing it",
+                    name,
+                    running_for,
+                    "running a job" if running_job else "its processes could not be inspected",
+                )
                 continue
 
             log.warning("  ⚠️  Stuck: %s (running %s, never came online)", name, running_for)

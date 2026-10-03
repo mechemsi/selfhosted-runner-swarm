@@ -441,3 +441,75 @@ class TestToolCache:
         assert "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" in envs
         assert "/opt/hostedtoolcache:/opt/hostedtoolcache" in args
         assert args.index("-e") < args.index(pool.runner_image)
+
+
+class TestCleanupStuck:
+    _PS_OUTPUT = (
+        "gh-runner-tt-online00\t20 minutes\n"  # listed online → keep
+        "gh-runner-tt-young000\t2 minutes\n"  # under the timeout → keep
+        "gh-runner-tt-working0\t20 minutes\n"  # Runner.Worker alive → keep
+        "gh-runner-tt-noinfo00\t20 minutes\n"  # docker top fails → keep (safe)
+        "gh-runner-tt-stuck000\t20 minutes\n"  # no worker, never online → kill
+    )
+    _TOP: ClassVar[dict[str, tuple[str, int]]] = {
+        "gh-runner-tt-working0": (
+            "UID PID PPID C STIME TTY TIME CMD\n"
+            "1000 10 1 0 10:00 ? 00:00:01 /home/runner/actions-runner/bin/Runner.Listener run\n"
+            "1000 20 10 0 10:01 ? 00:00:09 /home/runner/actions-runner/bin/Runner.Worker "
+            "spawnclient 120 123\n",
+            0,
+        ),
+        "gh-runner-tt-noinfo00": ("", 1),
+        "gh-runner-tt-stuck000": (
+            "UID PID PPID C STIME TTY TIME CMD\n"
+            "1000 10 1 0 10:00 ? 00:00:01 /bin/bash /entrypoint.sh\n",
+            0,
+        ),
+    }
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, removed: list[str]) -> DockerClient:
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            if args[0] == "ps":
+                return self._PS_OUTPUT, 0
+            if args[0] == "top":
+                return self._TOP[args[1]]
+            if args[0] == "rm":
+                removed.append(args[-1])
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+        return client
+
+    def test_kills_only_containers_without_a_running_job(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        removed: list[str] = []
+        self._client(monkeypatch, removed).cleanup_stuck(
+            "gh-runner-tt", {"gh-runner-tt-online00"}, timeout_minutes=8
+        )
+        assert removed == ["gh-runner-tt-stuck000"]
+
+    def test_online_and_young_containers_are_not_even_inspected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        inspected: list[str] = []
+        client = self._client(monkeypatch, [])
+        original = client._capture
+
+        def spying_capture(args: list[str]) -> tuple[str, int]:
+            if args[0] == "top":
+                inspected.append(args[1])
+            return original(args)
+
+        monkeypatch.setattr(client, "_capture", spying_capture)
+        client.cleanup_stuck("gh-runner-tt", {"gh-runner-tt-online00"}, timeout_minutes=8)
+
+        assert "gh-runner-tt-online00" not in inspected
+        assert "gh-runner-tt-young000" not in inspected
+
+    def test_has_running_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = self._client(monkeypatch, [])
+        assert client.has_running_job("gh-runner-tt-working0") is True
+        assert client.has_running_job("gh-runner-tt-stuck000") is False
+        assert client.has_running_job("gh-runner-tt-noinfo00") is None

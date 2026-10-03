@@ -31,6 +31,10 @@ class PoolConfig:
     scope: str = "organization"
     repo_discovery_ttl: int = 600
     github_poll_interval: int = 60
+    # Minutes a runner container may run without GitHub listing it online or
+    # busy before it counts as stuck and is killed. A container running a job
+    # (Runner.Worker alive inside it) is never killed, whatever GitHub says.
+    stuck_timeout: int = 8
     repo_check_workers: int = 6
     runner_operation_workers: int = 4
     max_runners: int = 3
@@ -272,6 +276,7 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 github_poll_interval=int(
                     p.get("github_poll_interval", defaults.get("github_poll_interval", 60))
                 ),
+                stuck_timeout=int(p.get("stuck_timeout", defaults.get("stuck_timeout", 8))),
                 repo_check_workers=int(
                     p.get("repo_check_workers", defaults.get("repo_check_workers", 6))
                 ),
@@ -312,6 +317,7 @@ def _load_from_env() -> PoolConfig:
         scope=scope,
         repo_discovery_ttl=int(os.environ.get("REPO_DISCOVERY_TTL", "600")),
         github_poll_interval=int(os.environ.get("GITHUB_POLL_INTERVAL", "60")),
+        stuck_timeout=int(os.environ.get("STUCK_TIMEOUT", "8")),
         repo_check_workers=int(os.environ.get("REPO_CHECK_WORKERS", "6")),
         runner_operation_workers=int(os.environ.get("RUNNER_OPERATION_WORKERS", "4")),
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
@@ -348,6 +354,8 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
             errors.append(f"Pool '{p.name}': repo_discovery_ttl cannot be negative")
         if p.github_poll_interval != 0 and not 15 <= p.github_poll_interval <= 3600:
             errors.append(f"Pool '{p.name}': github_poll_interval must be 0 or between 15 and 3600")
+        if not 1 <= p.stuck_timeout <= 1440:
+            errors.append(f"Pool '{p.name}': stuck_timeout must be between 1 and 1440 minutes")
         if not 1 <= p.repo_check_workers <= 32:
             errors.append(f"Pool '{p.name}': repo_check_workers must be between 1 and 32")
         if not 1 <= p.runner_operation_workers <= 16:
