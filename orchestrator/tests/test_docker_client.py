@@ -421,3 +421,23 @@ class TestCleanupCiContainers:
         monkeypatch.setattr(client, "_capture", fake_capture)
         client.cleanup_ci_containers(0, ("*",))
         assert calls == []  # no docker call at all when disabled
+
+
+class TestToolCache:
+    def test_runner_is_pointed_at_the_shared_toolcache(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        """Unset, the agent falls back to _work/_tool and downloads toolchains per job."""
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "ensure_image", lambda image: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+
+        client.spawn_runner(pool)
+
+        args = recorded[0]
+        envs = {args[i + 1] for i, arg in enumerate(args) if arg == "-e"}
+        assert "RUNNER_TOOL_CACHE=/opt/hostedtoolcache" in envs
+        assert "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" in envs
+        assert "/opt/hostedtoolcache:/opt/hostedtoolcache" in args
+        assert args.index("-e") < args.index(pool.runner_image)

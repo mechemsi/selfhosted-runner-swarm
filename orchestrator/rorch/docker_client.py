@@ -60,6 +60,13 @@ RUNNER_WORK_DIR = "/home/runner/actions-runner/_work"
 RUNNER_UID = 1000
 RUNNER_GID = 1000
 
+# Host bind mount shared by every runner, pre-warmed from the image's staged
+# Node/Python. The agent only uses it if told to: with neither variable set it
+# falls back to _work/_tool and setup-* actions download per job. The agent
+# checks RUNNER_TOOL_CACHE first; some setup-* actions read AGENT_TOOLSDIRECTORY.
+TOOL_CACHE_DIR = "/opt/hostedtoolcache"
+TOOL_CACHE_ENV = ("RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY")
+
 # The runner puts a job's `services:` (and container-job) containers on a
 # per-job network with this prefix. Nothing else on the host uses it.
 RUNNER_JOB_NETWORK_PREFIX = "github_network_"
@@ -583,7 +590,7 @@ class DockerClient:
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
-            "/opt/hostedtoolcache:/opt/hostedtoolcache",
+            f"{TOOL_CACHE_DIR}:{TOOL_CACHE_DIR}",
         ]
 
         for host_dir, container_dir in self._CACHE_MOUNTS:
@@ -613,6 +620,8 @@ class DockerClient:
                 f"RUNNER_LABELS={pool.runner_labels}",
             ]
         )
+        for var in TOOL_CACHE_ENV:
+            args.extend(["-e", f"{var}={TOOL_CACHE_DIR}"])
 
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])

@@ -46,6 +46,16 @@ if [ -d "$STAGING" ]; then
     done
 fi
 
+# ── Let jobs install into the toolcache ──────────────────────────────────────
+# Docker creates the bind-mount dir as root, and the warm step above creates
+# tool dirs (node/, Python/) as root too, so setup-* could not add a version the
+# image did not stage. Non-recursive: version dirs are already the runner's.
+sudo mkdir -p "$TOOLCACHE"
+sudo chown runner:runner "$TOOLCACHE"
+for tool_dir in "$TOOLCACHE"/*/; do
+    [ -d "$tool_dir" ] && [ ! -O "$tool_dir" ] && sudo chown runner:runner "$tool_dir"
+done
+
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64,docker}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 GITHUB_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}"
