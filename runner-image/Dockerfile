@@ -59,6 +59,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Point the agent and setup-* actions at the shared toolcache. Without these the
+# agent uses _work/_tool and every job downloads its toolchain again. The
+# orchestrator also passes them at spawn, so older images get them too.
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
+    AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+
 # ── Pre-stage Node for actions/setup-node ────────────────────────────────────
 # Stored in /opt/toolcache-staging; entrypoint copies to /opt/hostedtoolcache
 # (which is a bind-mount from the host) on first boot.

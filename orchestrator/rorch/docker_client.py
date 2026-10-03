@@ -10,9 +10,10 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import ClassVar
 
@@ -52,6 +53,29 @@ DOCKER_SOCKET = "/var/run/docker.sock"
 GID_LABEL = "rorch.docker_gid"
 
 
+# The runner agent's work dir: checkouts, node_modules and build output. Mounted
+# as tmpfs (pool.work_tmpfs_size) so CI churn stays off the host disk. Owned by
+# the image's `runner` user, the first account useradd creates on ubuntu:22.04.
+RUNNER_WORK_DIR = "/home/runner/actions-runner/_work"
+RUNNER_UID = 1000
+RUNNER_GID = 1000
+
+# Host bind mount shared by every runner, pre-warmed from the image's staged
+# Node/Python. The agent only uses it if told to: with neither variable set it
+# falls back to _work/_tool and setup-* actions download per job. The agent
+# checks RUNNER_TOOL_CACHE first; some setup-* actions read AGENT_TOOLSDIRECTORY.
+TOOL_CACHE_DIR = "/opt/hostedtoolcache"
+TOOL_CACHE_ENV = ("RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY")
+
+# The runner puts a job's `services:` (and container-job) containers on a
+# per-job network with this prefix. Nothing else on the host uses it.
+RUNNER_JOB_NETWORK_PREFIX = "github_network_"
+
+# Never treated as CI leftovers, whatever a configured pattern says: the
+# runners and the orchestrator (gh-runner-*) and rorch's own stack (rorch-*).
+PROTECTED_CONTAINER_PREFIXES = ("gh-runner-", "rorch-")
+
+
 def _host_docker_gid() -> int:
     """GID owning the mounted Docker socket (the host's docker group)."""
     return os.stat(DOCKER_SOCKET).st_gid
@@ -89,6 +113,30 @@ def _parse_running_minutes(running_for: str) -> float | None:
         return None
     except Exception:
         return None
+
+
+def _parse_created_at(created_at: str) -> datetime | None:
+    """Parse `docker ps` CreatedAt, e.g. `2026-10-03 22:26:48 +0300 EEST`."""
+    try:
+        return datetime.strptime(" ".join(created_at.split()[:3]), "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        return None
+
+
+def _is_ci_container(name: str, networks: str, labels: str, patterns: Iterable[str]) -> bool:
+    """Whether a container was started by a CI job rather than being host infrastructure."""
+    if name.startswith(PROTECTED_CONTAINER_PREFIXES):
+        return False
+    if any(n.startswith(RUNNER_JOB_NETWORK_PREFIX) for n in networks.split(",")):
+        return True
+    label_keys = {pair.split("=", 1)[0] for pair in labels.split(",") if pair}
+    for pattern in patterns:
+        if pattern.startswith("label="):
+            if pattern.removeprefix("label=") in label_keys:
+                return True
+        elif fnmatch(name, pattern):
+            return True
+    return False
 
 
 class DockerClient:
@@ -348,6 +396,73 @@ class DockerClient:
 
         self._run_parallel(kill, to_kill, timeout=15)
 
+    def cleanup_ci_containers(
+        self,
+        max_minutes: int,
+        patterns: Iterable[str] = (),
+        now: datetime | None = None,
+    ) -> None:
+        """Remove containers CI jobs started on the host socket and never cleaned up.
+
+        A job's `services:` and any `docker run` in its steps go through the host
+        socket, so they are siblings of the runner, not children. When the job is
+        cancelled the runner container dies before its cleanup step and those
+        siblings run (or sit in Created) indefinitely.
+
+        Only two kinds of container qualify: ones on a runner job network
+        (`github_network_*`), and ones matching an operator-configured name glob
+        or `label=KEY`. Both must also be older than max_minutes, which should be
+        above the longest job. gh-runner-* and rorch-* are never touched.
+        """
+        if max_minutes <= 0:
+            return
+        out, _ = self._capture(
+            [
+                "ps",
+                "-a",
+                "--format",
+                "{{.Names}}\t{{.CreatedAt}}\t{{.Networks}}\t{{.Labels}}",
+            ]
+        )
+        if not out:
+            return
+
+        patterns = tuple(patterns)
+        now = now or datetime.now(tz=UTC)
+        to_remove: list[str] = []
+        for line in out.split("\n"):
+            parts = line.split("\t")
+            if len(parts) != 4:
+                continue
+            name, created_at, networks, labels = parts
+            if not _is_ci_container(name, networks, labels, patterns):
+                continue
+            created = _parse_created_at(created_at)
+            if created is None:
+                continue
+            age_minutes = (now - created).total_seconds() / 60
+            if age_minutes < max_minutes:
+                continue
+            log.warning(
+                "  🧟 Leftover CI container: %s (created %s, older than %dm)",
+                name,
+                created_at,
+                max_minutes,
+            )
+            to_remove.append(name)
+
+        if not to_remove:
+            return
+
+        log.info("  Removing %d leftover CI container(s)", len(to_remove))
+
+        def rm(name: str) -> None:
+            _, code = self._capture(["rm", "-f", "-v", name])
+            if code == 0:
+                log.info("  🗑  Removed leftover CI container %s", name)
+
+        self._run_parallel(rm, to_remove, timeout=30)
+
     # Persistent cache mounts shared across ephemeral runners in a pool.
     # Each entry maps a host path (under /opt/runner-cache/<pool>/) to
     # a container path.  Concurrent runners may read/write simultaneously
@@ -475,11 +590,21 @@ class DockerClient:
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
-            "/opt/hostedtoolcache:/opt/hostedtoolcache",
+            f"{TOOL_CACHE_DIR}:{TOOL_CACHE_DIR}",
         ]
 
         for host_dir, container_dir in self._CACHE_MOUNTS:
             args.extend(["-v", f"{cache_base}/{host_dir}:{container_dir}"])
+
+        # exec: jobs run binaries out of the workspace (node_modules/.bin, vendor/bin).
+        if pool.work_tmpfs_enabled:
+            args.extend(
+                [
+                    "--tmpfs",
+                    f"{RUNNER_WORK_DIR}:rw,exec,size={pool.effective_work_tmpfs_size},"
+                    f"uid={RUNNER_UID},gid={RUNNER_GID}",
+                ]
+            )
 
         args.extend(
             [
@@ -495,6 +620,8 @@ class DockerClient:
                 f"RUNNER_LABELS={pool.runner_labels}",
             ]
         )
+        for var in TOOL_CACHE_ENV:
+            args.extend(["-e", f"{var}={TOOL_CACHE_DIR}"])
 
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])

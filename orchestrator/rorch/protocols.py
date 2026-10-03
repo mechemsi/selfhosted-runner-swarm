@@ -3,7 +3,9 @@
 
 """Protocol interfaces for dependency inversion."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from rorch.config import PoolConfig
@@ -83,6 +85,13 @@ class ContainerManager(Protocol):
         prefix: str,
         max_minutes: int,
         exclude: frozenset[str] = frozenset(),
+    ) -> None: ...
+
+    def cleanup_ci_containers(
+        self,
+        max_minutes: int,
+        patterns: Iterable[str] = (),
+        now: datetime | None = None,
     ) -> None: ...
 
     def spawn_runner(self, pool: PoolConfig) -> bool: ...

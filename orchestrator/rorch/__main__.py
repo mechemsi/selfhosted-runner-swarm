@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from rorch import server
 from rorch.config import (
     PoolConfig,
+    load_ci_container_max_age,
+    load_ci_container_patterns,
     load_config,
     load_max_runner_lifetime,
     load_max_total_runners,
@@ -43,6 +45,8 @@ class Runtime:
     rate_limit_reserve: int
     max_total_runners: int
     max_runner_lifetime: int
+    ci_container_max_age: int
+    ci_container_patterns: tuple[str, ...]
     store: Store | None
     resolver: ConfigResolver
     github: GitHubClient
@@ -90,6 +94,8 @@ def _build_runtime() -> Runtime:
         rate_limit_reserve=rate_limit_reserve,
         max_total_runners=max_total_runners,
         max_runner_lifetime=max_runner_lifetime,
+        ci_container_max_age=load_ci_container_max_age(),
+        ci_container_patterns=load_ci_container_patterns(),
         store=store,
         resolver=resolver,
         github=github,
@@ -112,6 +118,10 @@ def _log_banner(runtime: Runtime) -> None:
     log.info(
         "Max runner lifetime: %s",
         f"{runtime.max_runner_lifetime}m" if runtime.max_runner_lifetime else "disabled",
+    )
+    log.info(
+        "Leftover CI container reaper: %s",
+        f"{runtime.ci_container_max_age}m" if runtime.ci_container_max_age else "disabled",
     )
     log.info("State store: %s", "enabled" if runtime.store else "disabled (config.yml only)")
     _warn_public_repo_pools(runtime.pools, runtime.github)
@@ -183,6 +193,12 @@ def _tick_pools(scaler: PoolScaler, effective: EffectiveConfig) -> None:
 
 
 def _housekeeping(runtime: Runtime) -> None:
+    try:
+        runtime.docker.cleanup_ci_containers(
+            runtime.ci_container_max_age, runtime.ci_container_patterns
+        )
+    except Exception:
+        log.error("Leftover CI container cleanup failed", exc_info=True)
     try:
         runtime.docker.prune_images()
         runtime.docker.prune_build_cache()
