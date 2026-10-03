@@ -3,7 +3,10 @@ FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # npm ci when a lockfile is present, npm install to create one otherwise.
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# The cache mount keeps downloaded tarballs in BuildKit's cache instead of
+# re-fetching and re-extracting them on every rebuild.
+RUN --mount=type=cache,target=/root/.npm \
+    if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app

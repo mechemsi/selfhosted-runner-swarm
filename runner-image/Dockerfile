@@ -6,18 +6,6 @@ LABEL rorch.keep=true
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Runner agent version. An ARG so a pool can pin an older agent:
-#   docker build --build-arg RUNNER_VERSION=2.328.0 -t gh-runner:2.328.0 .
-# Must be >= 2.327 for Node24-runtime actions (shivammathur/setup-php@v2 and
-# the current actions/* releases); older agents fail with
-# "'using: node24' is not supported".
-ARG RUNNER_VERSION=2.337.0
-ENV RUNNER_VERSION=${RUNNER_VERSION}
-
-# Stamped so the orchestrator (and `docker image inspect`) can tell which agent
-# version a tag actually contains.
-LABEL rorch.runner_version=${RUNNER_VERSION}
-
 # Toolchain versions to pre-stage for actions/setup-* (avoids download on every run)
 ARG NODE_VERSION=22.16.0
 ARG PYTHON_VERSION=3.11.12
@@ -129,6 +117,24 @@ RUN if getent group "${DOCKER_GID}" >/dev/null; then \
     && usermod -aG sudo runner \
     && usermod -aG docker runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Declared here, after the toolchain layers, on purpose: an ARG/ENV change
+# invalidates the cache of every instruction that follows it. Declared at the
+# top, each agent bump (or each pinned older agent) recompiled Python from
+# source and wrote a full duplicate set of layers to the host disk. Here, all
+# versions share every layer above and only the agent download differs.
+#
+# Runner agent version. An ARG so a pool can pin an older agent:
+#   docker build --build-arg RUNNER_VERSION=2.328.0 -t gh-runner:2.328.0 .
+# Must be >= 2.327 for Node24-runtime actions (shivammathur/setup-php@v2 and
+# the current actions/* releases); older agents fail with
+# "'using: node24' is not supported".
+ARG RUNNER_VERSION=2.337.0
+ENV RUNNER_VERSION=${RUNNER_VERSION}
+
+# Stamped so the orchestrator (and `docker image inspect`) can tell which agent
+# version a tag actually contains.
+LABEL rorch.runner_version=${RUNNER_VERSION}
 
 # Download GitHub Actions runner
 WORKDIR /home/runner/actions-runner
