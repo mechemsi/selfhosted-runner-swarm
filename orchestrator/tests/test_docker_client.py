@@ -4,6 +4,7 @@
 """Tests for Docker client helpers."""
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Lock
 from typing import ClassVar
@@ -14,6 +15,7 @@ from rorch import docker_client
 from rorch.config import PoolConfig
 from rorch.docker_client import (
     RUNNER_BUILD_CONTEXT,
+    RUNNER_WORK_DIR,
     DockerClient,
     _parse_running_minutes,
     _pinned_runner_version,
@@ -302,3 +304,120 @@ class TestPinnedRunnerVersion:
         client.ensure_image("gh-runner:latest")
 
         assert not any(a.startswith("RUNNER_VERSION=") for a in recorded[0])
+
+
+class TestWorkTmpfs:
+    def _spawn_args(self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig) -> list[str]:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "ensure_image", lambda image: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+        client.spawn_runner(pool)
+        return recorded[0]
+
+    def test_work_dir_is_an_exec_tmpfs_owned_by_the_runner(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        args = self._spawn_args(monkeypatch, replace(pool, work_tmpfs_size="3g"))
+
+        assert args[args.index("--tmpfs") + 1] == (
+            f"{RUNNER_WORK_DIR}:rw,exec,size=3g,uid=1000,gid=1000"
+        )
+        # Options precede the image, or docker would pass them to the entrypoint.
+        assert args.index("--tmpfs") < args.index(pool.runner_image)
+
+    def test_auto_size_follows_the_memory_limit(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        args = self._spawn_args(monkeypatch, replace(pool, memory_limit="10g"))
+        assert ",size=5120m," in args[args.index("--tmpfs") + 1]
+
+    def test_disabled_tmpfs_adds_no_mount(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        args = self._spawn_args(monkeypatch, replace(pool, work_tmpfs_size="0"))
+        assert "--tmpfs" not in args
+
+
+class TestCleanupCiContainers:
+    _NOW = datetime(2026, 10, 3, 20, 0, tzinfo=UTC)
+    _OLD = "2026-10-03 10:35:44 +0300 EEST"  # 12h24m before _NOW
+    _NEW = "2026-10-03 22:26:48 +0300 EEST"  # 33 minutes before _NOW
+
+    _PS_OUTPUT = "\n".join(
+        [
+            # runner `services:` container on a job network
+            f"d883d79bc3f04918b85bdad0b4981ab1_mysql84_39083f\t{_OLD}\t"
+            "github_network_11b7677724a74b35b00050ff75047410\t7415c9=",
+            # same, but young enough that its job may still be running
+            f"aaaa_mysql84_111111\t{_NEW}\tgithub_network_aaaa\t7415c9=",
+            # workflow `docker run`, matched by name pattern
+            f"petopolis-ci-37103043876-backend-test-376-db\t{_OLD}\t"
+            "petopolis-ci-37103043876-backend-test-376-net\t",
+            # workflow `docker run`, matched by label pattern
+            f"cool_williamson\t{_OLD}\tbridge\tpetopolis-ci=37144039620-sca-376",
+            # host infrastructure: never touched
+            f"shortlinks-mysql\t{_OLD}\tshortlinks_default\tcom.docker.compose.project=s",
+            f"portainer\t{_OLD}\tbridge\t",
+            f"rorch-mariadb\t{_OLD}\trorch_default\t",
+            f"gh-runner-orchestrator\t{_OLD}\thost\t",
+            # a pattern that would match a runner must still spare it
+            f"gh-runner-petopolis-ci-aaaaaaaa\t{_OLD}\thost\t",
+            # unknown origin, no pattern matches
+            f"trusting_gagarin\t{_OLD}\tbridge\t",
+            # unparseable date: keep
+            "bbbb_mysql84_222222\tyesterday\tgithub_network_bbbb\t",
+            "malformed-row",
+        ]
+    )
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, removed: list[str]) -> DockerClient:
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            if args[0] == "ps":
+                return self._PS_OUTPUT, 0
+            if args[0] == "rm":
+                removed.append(args[-1])
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+        return client
+
+    def test_removes_only_old_runner_service_containers_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        removed: list[str] = []
+        self._client(monkeypatch, removed).cleanup_ci_containers(360, now=self._NOW)
+        assert removed == ["d883d79bc3f04918b85bdad0b4981ab1_mysql84_39083f"]
+
+    def test_configured_patterns_add_workflow_started_containers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        removed: list[str] = []
+        self._client(monkeypatch, removed).cleanup_ci_containers(
+            360, ("petopolis-ci-*", "*petopolis-ci-*", "label=petopolis-ci"), now=self._NOW
+        )
+        assert sorted(removed) == [
+            "cool_williamson",
+            "d883d79bc3f04918b85bdad0b4981ab1_mysql84_39083f",
+            "petopolis-ci-37103043876-backend-test-376-db",
+        ]
+
+    def test_catch_all_pattern_still_spares_runners_and_rorch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        removed: list[str] = []
+        self._client(monkeypatch, removed).cleanup_ci_containers(360, ("*",), now=self._NOW)
+        assert not any(name.startswith(("gh-runner-", "rorch-")) for name in removed)
+
+    def test_disabled_when_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            calls.append(args)
+            return "", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+        client.cleanup_ci_containers(0, ("*",))
+        assert calls == []  # no docker call at all when disabled

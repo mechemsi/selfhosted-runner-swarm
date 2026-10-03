@@ -21,6 +21,21 @@ max_total_runners: 0
 # work. 0 = disabled.
 max_runner_lifetime: 0
 
+# Containers a CI job starts through the host Docker socket (its `services:`,
+# or a `docker run` in a step) are siblings of the runner, so a cancelled job
+# leaves them running. Remove such leftovers once they are older than this many
+# minutes. Set it ABOVE your longest job. Default 360 (GitHub's default job
+# timeout). 0 = disabled.
+ci_container_max_age: 360
+
+# The runner's own `services:` containers are recognised automatically (they
+# sit on a github_network_* network). Containers a workflow starts itself with
+# `docker run` carry no such marker; list name globs or `label=KEY` entries
+# here to have them reaped too. gh-runner-* and rorch-* never match.
+# ci_container_patterns:
+#   - my-app-ci-*
+#   - label=my-app-ci
+
 # Settings below are the DEFAULT. The dashboard can override any of them at
 # runtime (stored in the rorch-data volume, not written back here); "reset" in
 # the UI drops the override and this file takes over again. Deleting the
@@ -67,6 +82,12 @@ defaults:
   runner_operation_workers: 4  # concurrent removals and provisions (max 16)
   memory_limit:  10g      # RAM per runner — set to (total LXC RAM - 2g) ÷ max_runners
   cpu_limit:     0       # 0 = no CPU limit (recommended) — runners use whatever is free
+  # tmpfs over the runner work dir (checkouts, node_modules, build output), so
+  # CI churn hits RAM instead of the host disk. Counts toward memory_limit.
+  #   auto (default) - half of memory_limit
+  #   4g, 512m       - fixed size; a job that fills it gets "No space left"
+  #   0              - no tmpfs, the work dir lives on the host disk as before
+  work_tmpfs_size: auto
 
 
 pools:

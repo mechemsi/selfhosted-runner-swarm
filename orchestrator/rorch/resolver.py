@@ -31,6 +31,7 @@ TUNABLE_FIELDS = frozenset(
         "runner_image",
         "memory_limit",
         "cpu_limit",
+        "work_tmpfs_size",
         "repo_discovery_ttl",
         "github_poll_interval",
         "repo_check_workers",

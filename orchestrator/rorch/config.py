@@ -5,12 +5,19 @@
 
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, replace
 
 import yaml
 
 log = logging.getLogger(__name__)
+
+# work_tmpfs_size "auto" when memory_limit is not a plain size.
+AUTO_WORK_TMPFS_FALLBACK = "4g"
+
+# GitHub's default job timeout-minutes.
+DEFAULT_CI_CONTAINER_MAX_AGE = 360
 
 
 @dataclass
@@ -32,6 +39,12 @@ class PoolConfig:
     runner_image: str = "gh-runner:latest"
     memory_limit: str = "2g"
     cpu_limit: float = 0.0
+    # Size of the tmpfs mounted over the runner work dir (checkouts, node_modules,
+    # build output). Keeps that churn off the host disk. tmpfs pages count toward
+    # memory_limit, so leave room for the job's processes. "auto" = half of
+    # memory_limit. "" or "0" = no tmpfs, the work dir lives in the container's
+    # writable layer as before.
+    work_tmpfs_size: str = "auto"
     # "host" shares the host network namespace: a job's `services:` containers
     # bind host ports and collide with anything already listening there (e.g. a
     # host Postgres on 5432). "bridge" isolates the runner so service containers
@@ -58,6 +71,25 @@ class PoolConfig:
         from fnmatch import fnmatch
 
         return any(fnmatch(name, pattern) for pattern in self.excluded_repo_patterns)
+
+    @property
+    def work_tmpfs_enabled(self) -> bool:
+        # Docker reads size=0 as "unbounded", so every zero spelling means off.
+        size = self.work_tmpfs_size.strip()
+        return bool(size) and parse_size(size) != 0
+
+    @property
+    def effective_work_tmpfs_size(self) -> str:
+        """The `size=` for the work dir tmpfs, or "" when it is disabled."""
+        size = self.work_tmpfs_size.strip()
+        if not self.work_tmpfs_enabled:
+            return ""
+        if size.lower() != "auto":
+            return size
+        memory = parse_size(self.memory_limit)
+        if not memory:
+            return AUTO_WORK_TMPFS_FALLBACK
+        return f"{memory // 2 // 1024**2}m"
 
     @property
     def is_org_level(self) -> bool:
@@ -101,11 +133,28 @@ class PoolConfig:
         )
 
 
+_SIZE_RE = re.compile(r"^(\d+)([kmg]?)b?$", re.IGNORECASE)
+_SIZE_UNITS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+
+
+def parse_size(value: str) -> int | None:
+    """Bytes in a Docker-style size such as `4g` or `512m`; None if malformed."""
+    match = _SIZE_RE.match(value.strip())
+    if not match:
+        return None
+    return int(match.group(1)) * _SIZE_UNITS[match.group(2).lower()]
+
+
 def _as_csv(value: object) -> str:
     """Accept either a YAML list or a comma-separated string."""
     if isinstance(value, list):
         return ",".join(str(v).strip() for v in value if str(v).strip())
     return str(value or "").strip()
+
+
+def _as_size(value: object) -> str:
+    """YAML reads `0` as an int and `~` as None; both mean "no tmpfs"."""
+    return "" if value is None else str(value).strip()
 
 
 def resolve_env(value: str) -> str:
@@ -160,6 +209,41 @@ def load_max_runner_lifetime(path: str = "config.yml") -> int:
     return value
 
 
+def load_ci_container_max_age(path: str = "config.yml") -> int:
+    """Minutes after which a leftover CI job container is removed (0 = disabled).
+
+    Containers a job starts through the host Docker socket (`services:`, or a
+    plain `docker run` in a step) outlive the job when it is cancelled, because
+    the runner never reaches its cleanup step. The default matches GitHub's
+    default job timeout, so no job that still owns the container can be running.
+    """
+    if os.path.exists(path):
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        value = int(raw.get("ci_container_max_age", DEFAULT_CI_CONTAINER_MAX_AGE))
+    else:
+        value = int(os.environ.get("CI_CONTAINER_MAX_AGE", str(DEFAULT_CI_CONTAINER_MAX_AGE)))
+    if value < 0:
+        log.error("ci_container_max_age cannot be negative (got %d)", value)
+        sys.exit(1)
+    return value
+
+
+def load_ci_container_patterns(path: str = "config.yml") -> tuple[str, ...]:
+    """Extra container name globs (or `label=KEY`) that mark a container as CI-owned.
+
+    Only needed for containers a workflow starts itself with `docker run`; the
+    runner's own `services:` containers are recognised without configuration.
+    """
+    if os.path.exists(path):
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        value = _as_csv(raw.get("ci_container_patterns", ""))
+    else:
+        value = os.environ.get("CI_CONTAINER_PATTERNS", "")
+    return tuple(p.strip() for p in value.split(",") if p.strip())
+
+
 def _load_from_yaml(path: str) -> list[PoolConfig]:
     with open(path) as f:
         raw = yaml.safe_load(f)
@@ -203,6 +287,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 runner_image=p.get("runner_image", global_image),
                 memory_limit=p.get("memory_limit", defaults.get("memory_limit", "2g")),
                 cpu_limit=float(p.get("cpu_limit", defaults.get("cpu_limit", 1.5))),
+                work_tmpfs_size=_as_size(
+                    p.get("work_tmpfs_size", defaults.get("work_tmpfs_size", "auto"))
+                ),
                 network_mode=str(
                     p.get("network_mode", defaults.get("network_mode", "host"))
                 ).lower(),
@@ -232,6 +319,7 @@ def _load_from_env() -> PoolConfig:
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
         runner_image=os.environ.get("RUNNER_IMAGE", "gh-runner:latest"),
         network_mode=os.environ.get("RUNNER_NETWORK_MODE", "host").lower(),
+        work_tmpfs_size=os.environ.get("RUNNER_WORK_TMPFS_SIZE", "auto").strip(),
         include_public_repos=os.environ.get("INCLUDE_PUBLIC_REPOS", "").lower()
         in {"1", "true", "yes"},
         exclude_repos=os.environ.get("EXCLUDE_REPOS", ""),
@@ -270,6 +358,11 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
             errors.append(f"Pool '{p.name}': min_idle cannot be negative")
         if p.network_mode not in {"host", "bridge"}:
             errors.append(f"Pool '{p.name}': network_mode must be 'host' or 'bridge'")
+        if p.work_tmpfs_enabled and parse_size(p.effective_work_tmpfs_size) is None:
+            errors.append(
+                f"Pool '{p.name}': work_tmpfs_size must be 'auto', a size like '4g' or "
+                f"'512m', or '0' to disable (got: '{p.work_tmpfs_size}')"
+            )
     return errors
 
 
@@ -289,6 +382,14 @@ def validation_warnings(pools: list[PoolConfig]) -> list[str]:
                 f"GitHub API calls for {p.display}, and share one row of dashboard state."
             )
         seen.add(p.name)
+        tmpfs = parse_size(p.effective_work_tmpfs_size) if p.work_tmpfs_enabled else None
+        memory = parse_size(p.memory_limit)
+        if tmpfs and memory and tmpfs >= memory:
+            warnings.append(
+                f"Pool '{p.name}': work_tmpfs_size {p.effective_work_tmpfs_size} is not below "
+                f"memory_limit {p.memory_limit}. tmpfs pages count toward the memory limit, "
+                f"so a job that fills its workspace gets OOM-killed instead of a disk-full error."
+            )
     return warnings
 
 

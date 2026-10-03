@@ -53,6 +53,8 @@ class Wired:
             "validate_pools": lambda _pools: None,
             "load_max_total_runners": lambda: 7,
             "load_max_runner_lifetime": lambda: 60,
+            "load_ci_container_max_age": lambda: 360,
+            "load_ci_container_patterns": lambda: (),
             "open_store": lambda _url: self.store,
             "ConfigResolver": lambda *_args: self.resolver,
             "GitHubClient": lambda **_kwargs: self.github,
@@ -143,6 +145,20 @@ def test_housekeeping_prunes_docker_and_history(wired: Wired) -> None:
     wired.docker.prune_volumes.assert_called_once_with()
     wired.store.prune.assert_called_once_with(14)
     wired.store.prune_idempotency.assert_called_once_with()
+
+
+def test_housekeeping_reaps_leftover_ci_containers(wired: Wired) -> None:
+    wired.run_one_tick()
+
+    wired.docker.cleanup_ci_containers.assert_called_once_with(360, ())
+
+
+def test_failed_ci_container_cleanup_still_prunes(wired: Wired) -> None:
+    wired.docker.cleanup_ci_containers.side_effect = RuntimeError("docker down")
+
+    wired.run_one_tick()
+
+    wired.docker.prune_images.assert_called_once_with()
 
 
 def test_failed_docker_prune_still_prunes_history(wired: Wired) -> None:

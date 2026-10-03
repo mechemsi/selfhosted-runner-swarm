@@ -12,8 +12,11 @@ import pytest
 
 from rorch.config import (
     PoolConfig,
+    load_ci_container_max_age,
+    load_ci_container_patterns,
     load_config,
     load_max_total_runners,
+    parse_size,
     resolve_env,
     validate_pools,
     validation_errors,
@@ -372,3 +375,96 @@ class TestRepositoryFiltering:
             "    exclude_repos: scratch, legacy-*\n"
         )
         assert load_config(str(config))[0].excluded_repo_patterns == ("scratch", "legacy-*")
+
+
+class TestWorkTmpfsSize:
+    def test_auto_is_half_the_memory_limit(self, pool: PoolConfig) -> None:
+        assert pool.work_tmpfs_size == "auto"
+        assert replace(pool, memory_limit="10g").effective_work_tmpfs_size == "5120m"
+
+    def test_auto_falls_back_when_memory_limit_is_not_a_size(self, pool: PoolConfig) -> None:
+        assert replace(pool, memory_limit="lots").effective_work_tmpfs_size == "4g"
+
+    def test_explicit_size_is_used_as_is(self, pool: PoolConfig) -> None:
+        assert replace(pool, work_tmpfs_size="3g").effective_work_tmpfs_size == "3g"
+
+    @pytest.mark.parametrize("off", ["", "0", " 0 ", "0g", "0m"])
+    def test_empty_or_zero_disables(self, pool: PoolConfig, off: str) -> None:
+        """Docker treats size=0 as unbounded, so zero must mean "no tmpfs" instead."""
+        disabled = replace(pool, work_tmpfs_size=off)
+        assert not disabled.work_tmpfs_enabled
+        assert disabled.effective_work_tmpfs_size == ""
+
+    def test_read_from_yaml_defaults_and_overridden_per_pool(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "defaults:\n"
+            "  work_tmpfs_size: 6g\n"
+            "pools:\n"
+            "  - name: inherits\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "  - name: disabled\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "    work_tmpfs_size: 0\n"  # YAML int, not a string
+        )
+        pools = {p.name: p for p in load_config(str(config))}
+
+        assert pools["inherits"].work_tmpfs_size == "6g"
+        assert not pools["disabled"].work_tmpfs_enabled
+
+    def test_malformed_size_is_rejected(self, pool: PoolConfig) -> None:
+        errors = validation_errors([replace(pool, work_tmpfs_size="four gigs")])
+        assert any("work_tmpfs_size" in message for message in errors)
+
+    def test_tmpfs_not_below_memory_limit_is_warned_about(self, pool: PoolConfig) -> None:
+        warnings = validation_warnings([replace(pool, memory_limit="2g", work_tmpfs_size="2g")])
+        assert any("work_tmpfs_size" in message for message in warnings)
+
+    def test_auto_never_warns(self, pool: PoolConfig) -> None:
+        assert validation_warnings([pool]) == []
+
+
+class TestParseSize:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("512m", 512 * 1024**2), ("4g", 4 * 1024**3), ("4G", 4 * 1024**3), ("100", 100)],
+    )
+    def test_docker_sizes(self, value: str, expected: int) -> None:
+        assert parse_size(value) == expected
+
+    @pytest.mark.parametrize("value", ["", "auto", "4 gigs", "-1g"])
+    def test_malformed_is_none(self, value: str) -> None:
+        assert parse_size(value) is None
+
+
+class TestCiContainerCleanupConfig:
+    def test_defaults_to_githubs_job_timeout(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text("pools: []\n")
+        assert load_ci_container_max_age(str(config)) == 360
+        assert load_ci_container_patterns(str(config)) == ()
+
+    def test_reads_yaml_keys(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "ci_container_max_age: 0\n"
+            "ci_container_patterns:\n"
+            "  - petopolis-ci-*\n"
+            "  - label=petopolis-ci\n"
+        )
+        assert load_ci_container_max_age(str(config)) == 0
+        assert load_ci_container_patterns(str(config)) == ("petopolis-ci-*", "label=petopolis-ci")
+
+    def test_env_fallback_without_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CI_CONTAINER_MAX_AGE", "120")
+        monkeypatch.setenv("CI_CONTAINER_PATTERNS", "a-*, b-*")
+        assert load_ci_container_max_age("/nonexistent/config.yml") == 120
+        assert load_ci_container_patterns("/nonexistent/config.yml") == ("a-*", "b-*")
+
+    def test_negative_age_exits(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text("ci_container_max_age: -1\n")
+        with pytest.raises(SystemExit):
+            load_ci_container_max_age(str(config))

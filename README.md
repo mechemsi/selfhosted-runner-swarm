@@ -165,6 +165,9 @@ secrets stay in `.env`.
 | `HISTORY_RETENTION_DAYS` | `14` | Days of dashboard history kept (`0` disables pruning) |
 | `RORCH_DB` | — | Set to `off` to run without the store and dashboard |
 | `RUNNER_NETWORK_MODE` | `host` | Runner network namespace — `host` or `bridge` |
+| `RUNNER_WORK_TMPFS_SIZE` | `auto` | tmpfs size for the runner work dir (`0` = off) |
+| `CI_CONTAINER_MAX_AGE` | `360` | Minutes before leftover CI job containers are removed (`0` = off) |
+| `CI_CONTAINER_PATTERNS` | none | Comma-separated name globs or `label=KEY` marking extra CI containers |
 
 Additional PATs can be defined for pools serving different accounts.
 
@@ -181,6 +184,7 @@ defaults:
   runner_operation_workers: 4
   memory_limit: 10g
   cpu_limit: 0          # 0 = unlimited
+  work_tmpfs_size: auto # half of memory_limit; 0 = off
 
 pools:
   - name: my-org
@@ -236,8 +240,37 @@ See [`example.config.yml`](example.config.yml) for detailed examples with commen
 |---------|-------------|
 | `memory_limit` | Hard memory cap per runner (e.g., `10g`, `512m`) |
 | `cpu_limit` | CPU cores per runner (`0` = unlimited) |
+| `work_tmpfs_size` | tmpfs over the runner work dir, `/home/runner/actions-runner/_work` (`auto` = half of `memory_limit`, a size such as `4g`, or `0` = off) |
 
 All runners also get `--pids-limit 512` to prevent fork bombs.
+
+The work dir holds checkouts, `node_modules` and build output, and is rewritten by every job.
+Without the tmpfs it lands in the container's writable layer, i.e. on the host disk. tmpfs pages
+are charged to the runner's memory cgroup, so the workspace and the job's processes share
+`memory_limit`: a job that fills its workspace past that is OOM-killed, one that fills a fixed
+`work_tmpfs_size` gets "No space left on device". RORCH warns at startup if `work_tmpfs_size` is
+not below `memory_limit`. The work dir was never bind-mounted from the host, so jobs could not
+pass `$GITHUB_WORKSPACE` paths to sibling containers before either; the tmpfs changes nothing there.
+
+### Leftover CI containers
+
+A job's `services:` and any `docker run` in its steps go through the host Docker socket, so they
+are siblings of the runner rather than children. When a job is cancelled the runner container
+dies before its cleanup step and those siblings keep running. Every ~15 minutes RORCH removes
+containers older than `ci_container_max_age` minutes (default `360`, GitHub's default job
+timeout; `0` disables) that are either:
+
+- on a `github_network_*` network, i.e. a runner-created `services:` or container-job container, or
+- matched by a `ci_container_patterns` entry: a name glob (`my-app-ci-*`) or `label=KEY`.
+
+`gh-runner-*` and `rorch-*` containers are never removed, whatever the patterns say.
+
+```yaml
+ci_container_max_age: 360
+ci_container_patterns:
+  - my-app-ci-*
+  - label=my-app-ci
+```
 
 ### Runner agent versions
 
