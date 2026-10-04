@@ -88,11 +88,12 @@ def wired(monkeypatch: pytest.MonkeyPatch, pool: PoolConfig, org_pool: PoolConfi
 def test_ticks_every_pool_with_its_state_then_sleeps(wired: Wired) -> None:
     wired.run_one_tick()
 
-    ticked = [(call.args[0].name, call.args[1]) for call in wired.scaler.tick.call_args_list]
-    assert ticked == [
-        (wired.pools[0].name, PoolState(draining=True)),
-        (wired.pools[1].name, PoolState()),
-    ]
+    # Pools tick concurrently, so completion order is not defined.
+    ticked = {call.args[0].name: call.args[1] for call in wired.scaler.tick.call_args_list}
+    assert ticked == {
+        wired.pools[0].name: PoolState(draining=True),
+        wired.pools[1].name: PoolState(),
+    }
     assert wired.sleeps == [900]
 
 
@@ -239,3 +240,13 @@ def test_banner_never_logs_any_part_of_a_pat(
     for pool in wired.pools:
         assert pool.pat[:8] not in caplog.text
     assert "PAT: SET" in caplog.text
+
+
+def test_concurrency_settings_are_clamped(wired: Wired, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POOL_TICK_WORKERS", "0")
+    monkeypatch.setenv("GITHUB_MAX_CONCURRENT_REQUESTS", "not-a-number")
+
+    runtime = daemon._build_runtime()
+
+    assert runtime.pool_tick_workers == 1
+    assert runtime.github_concurrency == daemon.DEFAULT_MAX_CONCURRENT_REQUESTS

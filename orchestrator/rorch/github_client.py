@@ -25,6 +25,7 @@ MAX_CONDITIONAL_CACHE_ENTRIES = 2048
 SECONDARY_RATE_LIMIT_BASE_SECONDS = 60
 SECONDARY_RATE_LIMIT_MAX_SECONDS = 900
 MUTATION_DELAY_SECONDS = 1.0
+DEFAULT_MAX_CONCURRENT_REQUESTS = 8
 
 
 @dataclass(frozen=True)
@@ -76,11 +77,21 @@ class GitHubClient:
         rate_limit_reserve: int = 100,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     ) -> None:
         self._rate_limit_reserve = rate_limit_reserve
         self._wall_clock = wall_clock
         self._sleep = sleep
-        self._request_lock = threading.Lock()
+        # Bounds requests in flight across every pool and thread. It used to be
+        # one lock held across the whole HTTP round trip, which serialised every
+        # pool's scan behind every other pool's: repo_check_workers and parallel
+        # pool ticks bought nothing, because each request waited for the last.
+        self._request_slots = threading.BoundedSemaphore(max(1, max_concurrent_requests))
+        # Guards the caches and rate-limit bookkeeping below. Held only for
+        # dictionary work, never across network I/O.
+        self._state_lock = threading.Lock()
+        # Mutations stay strictly serial and paced, as GitHub asks.
+        self._mutation_lock = threading.Lock()
         self._blocked_until: dict[bytes, float] = {}
         self._secondary_failures: dict[bytes, int] = {}
         self._conditional_cache: OrderedDict[tuple[bytes, str], ConditionalResponse] = OrderedDict()
@@ -95,10 +106,12 @@ class GitHubClient:
         token_key = hashlib.sha256(pat.encode()).digest()
         cache_key = (token_key, path)
 
-        with self._request_lock:
-            now = self._wall_clock()
-            self._raise_if_blocked(token_key, now)
-            self._pace_mutation(method, now)
+        with self._state_lock:
+            self._raise_if_blocked(token_key, self._wall_clock())
+            cached = self._conditional_cache.get(cache_key) if method == "GET" else None
+
+        with self._request_slots:
+            self._pace_mutation(method)
 
             url = f"{self.API_BASE}{path}"
             req = urllib.request.Request(url, method=method)
@@ -106,30 +119,36 @@ class GitHubClient:
             req.add_header("Accept", "application/vnd.github+json")
             req.add_header("X-GitHub-Api-Version", self.API_VERSION)
             req.add_header("User-Agent", "rorch-runner-orchestrator")
-            cached = self._conditional_cache.get(cache_key) if method == "GET" else None
             if cached is not None:
                 req.add_header("If-None-Match", cached.etag)
 
             try:
                 with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
-                    self._update_rate_limit(token_key, resp.headers)
+                    headers = resp.headers
+                    status = resp.status
+                    body = resp.read() if method != "DELETE" else b""
+                with self._state_lock:
+                    self._update_rate_limit(token_key, headers)
                     self._secondary_failures.pop(token_key, None)
                     if method == "DELETE":
-                        return resp.status == 204
-                    data = json.loads(resp.read())
-                    self._cache_conditional_response(cache_key, resp.headers.get("ETag"), data)
+                        return status == 204
+                    data = json.loads(body)
+                    self._cache_conditional_response(cache_key, headers.get("ETag"), data)
                     return data
             except urllib.error.HTTPError as error:
                 if error.code == 304 and cached is not None:
-                    self._update_rate_limit(token_key, error.headers)
-                    self._secondary_failures.pop(token_key, None)
-                    self._conditional_cache.move_to_end(cache_key)
+                    with self._state_lock:
+                        self._update_rate_limit(token_key, error.headers)
+                        self._secondary_failures.pop(token_key, None)
+                        if cache_key in self._conditional_cache:
+                            self._conditional_cache.move_to_end(cache_key)
                     return cached.data
 
-                body = error.read().decode(errors="replace")
-                if self._is_rate_limit_error(error, body):
-                    retry_at, reason = self._rate_limit_retry(token_key, error, body)
-                    self._block_token(token_key, retry_at, reason)
+                text = error.read().decode(errors="replace")
+                if self._is_rate_limit_error(error, text):
+                    with self._state_lock:
+                        retry_at, reason = self._rate_limit_retry(token_key, error, text)
+                        self._block_token(token_key, retry_at, reason)
                     raise GitHubRateLimitError(retry_at, reason) from error
 
                 log.error(
@@ -137,7 +156,7 @@ class GitHubClient:
                     method,
                     error.code,
                     path,
-                    body[:200],
+                    text[:200],
                 )
                 return None
             except GitHubRateLimitError:
@@ -153,21 +172,21 @@ class GitHubClient:
             return
         raise GitHubRateLimitError(blocked_until, "GitHub API cooldown is active")
 
-    def _pace_mutation(self, method: str, now: float) -> None:
+    def _pace_mutation(self, method: str) -> None:
         if method not in {"POST", "PATCH", "PUT", "DELETE"}:
             return
-        delay = MUTATION_DELAY_SECONDS - (now - self._last_mutation_at)
-        if delay > 0:
-            self._sleep(delay)
-        self._last_mutation_at = self._wall_clock()
+        with self._mutation_lock:
+            delay = MUTATION_DELAY_SECONDS - (self._wall_clock() - self._last_mutation_at)
+            if delay > 0:
+                self._sleep(delay)
+            self._last_mutation_at = self._wall_clock()
 
     def rate_limit_status(self) -> dict[str, Any]:
         """Last-seen API budget, for the dashboard. Read-only, makes no API call.
 
-        Deliberately lock-free: `_request_lock` is held for the duration of each
-        GitHub call, so taking it here would stall a dashboard refresh behind a
-        10s API timeout. These are plain attribute reads of values written under
-        that lock, so the worst case is a status one tick stale.
+        Deliberately lock-free: these are plain attribute reads of values
+        written under `_state_lock`, so the worst case is a status one tick
+        stale, and a dashboard refresh never waits on scaler bookkeeping.
         """
         blocked_until = self._blocked_until_any
         return {

@@ -154,6 +154,8 @@ secrets stay in `.env`.
 |----------|---------|-------------|
 | `GITHUB_PAT` | — | Primary GitHub PAT (required) |
 | `POLL_INTERVAL` | `15` | Main loop wake-up interval |
+| `POOL_TICK_WORKERS` | `8` | Pools that can tick at the same time (1-64); size it to at least the number of pools |
+| `GITHUB_MAX_CONCURRENT_REQUESTS` | `8` | GitHub requests in flight at once, across all pools (1-32) |
 | `REPO_DISCOVERY_TTL` | `600` | Personal repository-list cache lifetime in seconds |
 | `GITHUB_POLL_INTERVAL` | `60` | Minimum seconds between GitHub scans for each pool |
 | `GITHUB_RATE_LIMIT_RESERVE` | `100` | Stop before consuming the final PAT requests |
@@ -219,13 +221,29 @@ ones through a separate bounded worker pool. This preserves `max_runners` while 
 waits across large personal accounts. Set `repo_check_workers` and `runner_operation_workers`
 per pool to tune concurrency; limits are 32 and 16 respectively.
 
+### Pools tick independently
+
+Each pool ticks on its own lane. The main loop wakes every `POLL_INTERVAL`, starts a tick for
+every pool whose previous tick has finished, and goes back to sleep without waiting for any of
+them, so a pool whose GitHub scan takes 40 seconds delays only itself. A pool is never ticked
+twice at once: if its last tick is still running it is skipped that round (and logged as stalled
+after 10 minutes). Aged-runner cleanup, network pruning and periodic housekeeping run on a
+separate executor, so busy pools cannot starve them.
+
+`max_total_runners` still holds while pools spawn concurrently: counting the running containers
+and granting spawn slots is one atomic step, and granted slots stay reserved until their
+`docker run` returns, so two pools deciding at the same moment cannot both claim the last slot.
+
 ### GitHub API rate budget
 
 RORCH limits each pool to one GitHub scan per `github_poll_interval` (60 seconds by default),
 even when the main loop wakes every 15 seconds. Authenticated GET responses are cached with
 their `ETag`; unchanged `304 Not Modified` responses do not consume GitHub's primary rate limit.
-Outbound GitHub requests are serialized to avoid secondary concurrency limits, while Docker
-work remains parallel.
+At most `GITHUB_MAX_CONCURRENT_REQUESTS` GitHub requests are in flight at once (well under
+GitHub's documented limit of 100 concurrent requests), and mutating requests (runner
+deregistration) stay strictly serial, at least one second apart, as GitHub recommends. A repo
+check costs three requests when nothing is running (runners, queued runs, in-progress runs) plus
+one jobs request per active run.
 
 Every response updates the token's remaining/reset budget. RORCH stops when
 `GITHUB_RATE_LIMIT_RESERVE` requests remain, resumes after `X-RateLimit-Reset`, and honors

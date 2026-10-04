@@ -19,7 +19,8 @@ from rorch.config import (
     validate_pools,
 )
 from rorch.docker_client import ORCHESTRATOR_CONTAINER, DockerClient
-from rorch.github_client import GitHubClient
+from rorch.github_client import DEFAULT_MAX_CONCURRENT_REQUESTS, GitHubClient
+from rorch.lanes import TickLanes
 from rorch.resolver import ConfigResolver, EffectiveConfig
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX, PoolScaler
 from rorch.store import Store, open_store
@@ -32,6 +33,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "/app/data/rorch.db"
+DEFAULT_POOL_TICK_WORKERS = 8
+CLEANUP_LANE = "cleanup"
+HOUSEKEEPING_LANE = "housekeeping"
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,8 @@ class Runtime:
     prune_every: int
     retention_days: int
     rate_limit_reserve: int
+    github_concurrency: int
+    pool_tick_workers: int
     max_total_runners: int
     max_runner_lifetime: int
     ci_container_max_age: int
@@ -63,13 +69,22 @@ def main() -> None:
     for image in {p.runner_image for p in runtime.pools}:
         runtime.docker.ensure_image(image)
 
+    # Pools tick on their own lanes and the loop never waits for them, so a
+    # slow pool delays only itself. Cleanup and housekeeping get a separate
+    # executor so busy pools cannot starve them, nor they the pools.
+    pool_lanes = TickLanes(runtime.pool_tick_workers, name="pool-tick")
+    maintenance = TickLanes(2, name="maintenance")
     tick_count = 0
-    while True:
-        _tick(runtime)
-        tick_count += 1
-        if tick_count % runtime.prune_every == 0:
-            _housekeeping(runtime)
-        time.sleep(runtime.poll)
+    try:
+        while True:
+            _tick(runtime, pool_lanes, maintenance)
+            tick_count += 1
+            if tick_count % runtime.prune_every == 0:
+                maintenance.submit(HOUSEKEEPING_LANE, lambda: _housekeeping(runtime))
+            time.sleep(runtime.poll)
+    finally:
+        pool_lanes.shutdown()
+        maintenance.shutdown()
 
 
 def _build_runtime() -> Runtime:
@@ -84,7 +99,12 @@ def _build_runtime() -> Runtime:
     resolver = ConfigResolver(pools, max_total_runners, max_runner_lifetime, store)
 
     rate_limit_reserve = max(0, int(os.environ.get("GITHUB_RATE_LIMIT_RESERVE", "100")))
-    github = GitHubClient(rate_limit_reserve=rate_limit_reserve)
+    github_concurrency = _bounded_env(
+        "GITHUB_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS, 1, 32
+    )
+    github = GitHubClient(
+        rate_limit_reserve=rate_limit_reserve, max_concurrent_requests=github_concurrency
+    )
     docker = DockerClient(store=store)
     return Runtime(
         pools=pools,
@@ -92,6 +112,8 @@ def _build_runtime() -> Runtime:
         prune_every=max(1, 900 // poll),  # ~every 15 minutes
         retention_days=retention_days,
         rate_limit_reserve=rate_limit_reserve,
+        github_concurrency=github_concurrency,
+        pool_tick_workers=_bounded_env("POOL_TICK_WORKERS", DEFAULT_POOL_TICK_WORKERS, 1, 64),
         max_total_runners=max_total_runners,
         max_runner_lifetime=max_runner_lifetime,
         ci_container_max_age=load_ci_container_max_age(),
@@ -111,6 +133,17 @@ def _log_banner(runtime: Runtime) -> None:
         _log_pool(pool)
     log.info("Poll interval: %ds  (image prune every %d ticks)", runtime.poll, runtime.prune_every)
     log.info("GitHub API reserve: %d requests", runtime.rate_limit_reserve)
+    log.info(
+        "Concurrency: %d pool ticks, %d GitHub requests in flight",
+        runtime.pool_tick_workers,
+        runtime.github_concurrency,
+    )
+    if len(runtime.pools) > runtime.pool_tick_workers:
+        log.warning(
+            "%d pools but POOL_TICK_WORKERS=%d: some pools will wait for a free worker",
+            len(runtime.pools),
+            runtime.pool_tick_workers,
+        )
     log.info(
         "Global runner cap: %s",
         runtime.max_total_runners if runtime.max_total_runners else "unlimited",
@@ -164,15 +197,35 @@ def _start_dashboard(runtime: Runtime) -> None:
     )
 
 
-def _tick(runtime: Runtime) -> None:
+def _tick(runtime: Runtime, pool_lanes: TickLanes, maintenance: TickLanes) -> None:
+    """Start whatever is due and return at once; nothing here waits for a pool."""
     effective = runtime.resolver.resolve()
     runtime.scaler.max_total_runners = effective.max_total_runners
 
     if effective.paused:
         log.info("All provisioning paused — skipping tick")
     else:
-        _tick_pools(runtime.scaler, effective)
+        _submit_pool_ticks(runtime.scaler, effective, pool_lanes)
 
+    maintenance.submit(CLEANUP_LANE, lambda: _cleanup(runtime, effective))
+
+
+def _submit_pool_ticks(scaler: PoolScaler, effective: EffectiveConfig, lanes: TickLanes) -> None:
+    """Give every pool a tick on its own lane.
+
+    Pools not yet due return from `scaler.tick` immediately (github_poll_interval),
+    so submitting each one every loop is cheap. A pool whose previous tick is
+    still running is skipped, never ticked twice at once. One pool's failure
+    (a bad PAT, a GitHub outage for that owner) is logged by its lane and cannot
+    starve the rest.
+    """
+    for pool in effective.pools:
+        state = effective.state_for(pool.name)
+        lanes.submit(pool.name, lambda pool=pool, state=state: scaler.tick(pool, state))
+    lanes.forget_except({pool.name for pool in effective.pools})
+
+
+def _cleanup(runtime: Runtime, effective: EffectiveConfig) -> None:
     try:
         runtime.docker.cleanup_aged(
             GLOBAL_CONTAINER_PREFIX,
@@ -188,15 +241,6 @@ def _tick(runtime: Runtime) -> None:
         runtime.docker.prune_networks()
     except Exception:
         log.error("Network prune failed", exc_info=True)
-
-
-def _tick_pools(scaler: PoolScaler, effective: EffectiveConfig) -> None:
-    for pool in effective.pools:
-        # One pool's failure (a bad PAT, a GitHub outage for that owner) must not starve the rest.
-        try:
-            scaler.tick(pool, effective.state_for(pool.name))
-        except Exception:
-            log.error("[%s] Unhandled error", pool.name, exc_info=True)
 
 
 def _housekeeping(runtime: Runtime) -> None:
@@ -243,6 +287,17 @@ def _warn_public_repo_pools(pools: list, github: GitHubClient) -> None:
             pool.name,
             pool.display,
         )
+
+
+def _bounded_env(name: str, default: int, low: int, high: int) -> int:
+    """An integer setting clamped to [low, high]; a bad value falls back to the default."""
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        log.warning("%s=%r is not an integer; using %d", name, raw, default)
+        value = default
+    return min(high, max(low, value))
 
 
 def _db_url() -> str:

@@ -5,6 +5,7 @@
 
 import hashlib
 import logging
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -49,7 +50,14 @@ class PoolInspection:
 
 
 class PoolScaler:
-    """Manage runner scaling through bounded inspection and operation pools."""
+    """Manage runner scaling through bounded inspection and operation pools.
+
+    One instance serves every pool, and the daemon ticks different pools
+    concurrently (never the same pool twice at once). Shared state is therefore
+    guarded: `_state_lock` covers the poll schedule and the repository cache,
+    and `_cap_lock` makes "count running containers, then reserve slots" one
+    atomic step so two pools spawning together cannot overshoot the global cap.
+    """
 
     def __init__(
         self,
@@ -66,6 +74,11 @@ class PoolScaler:
         self._store = store
         self._repository_cache: dict[tuple[str, str, bytes], RepositoryCacheEntry] = {}
         self._next_poll_at: dict[tuple[str, str, str, bytes], float] = {}
+        self._state_lock = threading.Lock()
+        self._cap_lock = threading.Lock()
+        # Spawns granted against the global cap whose `docker run` has not
+        # returned yet, so `docker ps` cannot see them.
+        self._reserved_spawns = 0
 
     @property
     def max_total_runners(self) -> int:
@@ -91,12 +104,13 @@ class PoolScaler:
         started = time.monotonic()
         now = self._clock()
         pool_key = self._pool_key(pool)
-        next_poll_at = self._next_poll_at.get(pool_key, 0.0)
-        if now < next_poll_at:
-            log.debug("[%s] GitHub scan deferred for %.1fs", pool.name, next_poll_at - now)
-            return
-        if pool.github_poll_interval > 0:
-            self._next_poll_at[pool_key] = now + pool.github_poll_interval
+        with self._state_lock:
+            next_poll_at = self._next_poll_at.get(pool_key, 0.0)
+            if now < next_poll_at:
+                log.debug("[%s] GitHub scan deferred for %.1fs", pool.name, next_poll_at - now)
+                return
+            if pool.github_poll_interval > 0:
+                self._next_poll_at[pool_key] = now + pool.github_poll_interval
 
         try:
             if pool.is_personal_level:
@@ -105,10 +119,11 @@ class PoolScaler:
                 self._tick_single(pool, draining=state.draining)
         except GitHubRateLimitError as error:
             retry_after = max(1.0, error.retry_at_epoch - time.time())
-            self._next_poll_at[pool_key] = max(
-                self._next_poll_at.get(pool_key, 0.0),
-                now + retry_after,
-            )
+            with self._state_lock:
+                self._next_poll_at[pool_key] = max(
+                    self._next_poll_at.get(pool_key, 0.0),
+                    now + retry_after,
+                )
             log.warning(
                 "[%s] GitHub scan paused for %.0fs: %s",
                 pool.name,
@@ -118,22 +133,48 @@ class PoolScaler:
         finally:
             log.info("[%s] Tick completed in %.2fs", pool.name, time.monotonic() - started)
 
-    def _cap_to_global_limit(self, pool_name: str, to_spawn: int) -> int:
-        """Cap spawn count so total containers across all pools stay under the ceiling."""
-        if self._max_total_runners <= 0 or to_spawn <= 0:
+    def _reserve_spawns(self, pool_name: str, to_spawn: int) -> int:
+        """Grant up to `to_spawn` slots under the global ceiling and hold them.
+
+        Counting and granting happen under one lock, and granted slots stay
+        reserved until their `docker run` returns (see `_release_spawns`), so
+        pools ticking concurrently can never jointly exceed the cap. Every
+        granted slot must be released exactly once.
+        """
+        if to_spawn <= 0:
+            return 0
+        with self._cap_lock:
+            cap = self._max_total_runners
+            if cap > 0:
+                total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+                headroom = max(0, cap - total - self._reserved_spawns)
+                if to_spawn > headroom:
+                    log.warning(
+                        "[%s] Global runner cap %d reached (%d running, %d starting); "
+                        "capping spawn %d → %d",
+                        pool_name,
+                        cap,
+                        total,
+                        self._reserved_spawns,
+                        to_spawn,
+                        headroom,
+                    )
+                to_spawn = min(to_spawn, headroom)
+            self._reserved_spawns += to_spawn
             return to_spawn
-        total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
-        headroom = max(0, self._max_total_runners - total)
-        if to_spawn > headroom:
-            log.warning(
-                "[%s] Global runner cap %d reached (%d running); capping spawn %d → %d",
-                pool_name,
-                self._max_total_runners,
-                total,
-                to_spawn,
-                headroom,
-            )
-        return min(to_spawn, headroom)
+
+    def _release_spawns(self, count: int) -> None:
+        if count <= 0:
+            return
+        with self._cap_lock:
+            self._reserved_spawns = max(0, self._reserved_spawns - count)
+
+    def _spawn_reserved(self, pool: PoolConfig) -> bool:
+        """Spawn one runner, then hand its reserved slot back to `docker ps`."""
+        try:
+            return self._docker.spawn_runner(pool)
+        finally:
+            self._release_spawns(1)
 
     def _tick_single(self, pool: PoolConfig, draining: bool = False) -> None:
         inspection = self._inspect_pool(pool)
@@ -143,7 +184,7 @@ class PoolScaler:
             to_spawn = 0
         else:
             to_spawn = self._calculate_spawn_count(pool, inspection)
-        to_spawn = self._cap_to_global_limit(pool.name, to_spawn)
+        to_spawn = self._reserve_spawns(pool.name, to_spawn)
         self._run_runner_operations(
             [inspection],
             [(pool, to_spawn)],
@@ -171,8 +212,13 @@ class PoolScaler:
             log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
             capacity = 0
         else:
-            capacity = self._cap_to_global_limit(
-                pool.name, max(0, pool.max_runners - total_running)
+            # Reserve only what some repository actually needs: a reservation
+            # is headroom every other pool loses until the spawns finish.
+            needed_total = sum(
+                max(0, item.busy + item.queued - item.running) for item in inspections
+            )
+            capacity = self._reserve_spawns(
+                pool.name, min(max(0, pool.max_runners - total_running), needed_total)
             )
         allocations = {inspection.pool.repo: 0 for inspection in inspections}
         ordered = sorted(inspections, key=lambda item: (-item.queued, item.pool.repo))
@@ -302,12 +348,33 @@ class PoolScaler:
         spawn_allocations: list[tuple[PoolConfig, int]],
         max_workers: int,
     ) -> None:
-        """Run deregistration and provisioning together through one bounded pool."""
+        """Run deregistration and provisioning together through one bounded pool.
+
+        Every spawn in `spawn_allocations` holds a global-cap reservation; each
+        is released when its spawn finishes, or here if it never started.
+        """
+        spawn_count = sum(count for _, count in spawn_allocations)
+        submitted_spawns = 0
+        try:
+            submitted_spawns = self._execute_runner_operations(
+                inspections, spawn_allocations, max_workers
+            )
+        finally:
+            self._release_spawns(spawn_count - submitted_spawns)
+
+    def _execute_runner_operations(
+        self,
+        inspections: list[PoolInspection],
+        spawn_allocations: list[tuple[PoolConfig, int]],
+        max_workers: int,
+    ) -> int:
+        """Run the operations; return how many spawns were handed to a worker."""
         operation_count = sum(len(item.offline_runners) for item in inspections) + sum(
             count for _, count in spawn_allocations
         )
         if operation_count == 0:
-            return
+            return 0
+        submitted_spawns = 0
 
         worker_count = min(max_workers, operation_count)
         with ThreadPoolExecutor(
@@ -335,7 +402,8 @@ class PoolScaler:
                     futures[future] = f"deregister {runner.name}"
                 if spawn_jobs:
                     spawn_pool = spawn_jobs.pop()
-                    future = executor.submit(self._docker.spawn_runner, spawn_pool)
+                    future = executor.submit(self._spawn_reserved, spawn_pool)
+                    submitted_spawns += 1
                     futures[future] = f"spawn for {spawn_pool.display}"
 
             for future in as_completed(futures):
@@ -345,6 +413,7 @@ class PoolScaler:
                         log.warning("Runner operation failed: %s", operation)
                 except Exception:
                     log.error("Runner operation raised: %s", operation, exc_info=True)
+        return submitted_spawns
 
     def _deregister_runner(self, pool: PoolConfig, runner: RunnerInfo) -> bool:
         log.info("  🧹  Deregistering offline runner: %s (id=%s)", runner.name, runner.id)
@@ -361,7 +430,8 @@ class PoolScaler:
         """Return cached repositories, refreshing after the configured TTL."""
         token_digest = hashlib.sha256(pool.pat.encode()).digest()
         cache_key = (pool.name, pool.owner.lower(), token_digest)
-        cached = self._repository_cache.get(cache_key)
+        with self._state_lock:
+            cached = self._repository_cache.get(cache_key)
 
         if cached is not None and now < cached.expires_at:
             log.debug("[%s] Repository discovery cache hit", pool.name)
@@ -374,10 +444,24 @@ class PoolScaler:
                 return list(cached.repositories)
             return []
 
-        if pool.repo_discovery_ttl == 0:
-            self._repository_cache.pop(cache_key, None)
-            return repositories
+        with self._state_lock:
+            if pool.repo_discovery_ttl == 0:
+                self._repository_cache.pop(cache_key, None)
+                return repositories
+            self._store_repositories(cache_key, repositories, now + pool.repo_discovery_ttl)
+        log.info(
+            "[%s] Discovered %d repositories (cache TTL=%ds)",
+            pool.name,
+            len(repositories),
+            pool.repo_discovery_ttl,
+        )
+        return repositories
 
+    def _store_repositories(
+        self, cache_key: tuple[str, str, bytes], repositories: list[str], expires_at: float
+    ) -> None:
+        """Insert into the bounded cache. Caller holds `_state_lock`: eviction
+        iterates the dict, which another pool's thread may otherwise resize."""
         if (
             cache_key not in self._repository_cache
             and len(self._repository_cache) >= MAX_REPOSITORY_CACHE_ENTRIES
@@ -387,18 +471,9 @@ class PoolScaler:
                 key=lambda key: self._repository_cache[key].expires_at,
             )
             del self._repository_cache[oldest_key]
-
         self._repository_cache[cache_key] = RepositoryCacheEntry(
-            repositories=tuple(repositories),
-            expires_at=now + pool.repo_discovery_ttl,
+            repositories=tuple(repositories), expires_at=expires_at
         )
-        log.info(
-            "[%s] Discovered %d repositories (cache TTL=%ds)",
-            pool.name,
-            len(repositories),
-            pool.repo_discovery_ttl,
-        )
-        return repositories
 
     @staticmethod
     def _pool_key(pool: PoolConfig) -> tuple[str, str, str, bytes]:
