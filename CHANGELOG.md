@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.0...v1.1.1) (2026-10-04)
+
+### Bug Fixes
+
+* **server:** serve the API with waitress instead of the Flask dev server ([#27](https://github.com/mechemsi/selfhosted-runner-swarm/issues/27)) ([2ee4d67](https://github.com/mechemsi/selfhosted-runner-swarm/commit/2ee4d67bb019a5381280c59f461ae6532fcc9969))
+
 ## [1.1.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.0.0...v1.1.0) (2026-10-04)
 
 ### Features
