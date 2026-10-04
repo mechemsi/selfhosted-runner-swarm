@@ -513,3 +513,23 @@ class TestCleanupStuck:
         assert client.has_running_job("gh-runner-tt-working0") is True
         assert client.has_running_job("gh-runner-tt-stuck000") is False
         assert client.has_running_job("gh-runner-tt-noinfo00") is None
+
+
+class TestPruneNetworks:
+    def test_prunes_only_unused_networks_past_the_grace_period(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_capture(args: list[str]) -> tuple[str, int]:
+            calls.append(args)
+            return "Deleted Networks:\ngithub_network_0d3c\n", 0
+
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", fake_capture)
+
+        client.prune_networks()
+
+        # `network prune` never touches a network with a container attached;
+        # `until` spares a job's network before its first service container joins.
+        assert calls == [["network", "prune", "-f", "--filter", "until=30m"]]
