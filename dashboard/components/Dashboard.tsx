@@ -12,6 +12,7 @@ import Jobs from "./Jobs";
 import Events from "./Events";
 
 const POLL_MS = 5000;
+const DASHBOARD_VERSION = process.env.RORCH_DASHBOARD_VERSION ?? "unknown";
 
 export default function Dashboard({ role }: { role: Role }) {
   const router = useRouter();
@@ -83,6 +84,13 @@ export default function Dashboard({ role }: { role: Role }) {
         <span style={{ flex: 1 }} />
         <span className="muted">
           {error ? <span className="bad">{error}</span> : `updated ${stamp}`}
+        </span>
+        <span
+          className="muted"
+          title={`dashboard v${DASHBOARD_VERSION} · orchestrator v${state?.version ?? "?"}`}
+        >
+          v{DASHBOARD_VERSION}
+          {state?.version && state.version !== DASHBOARD_VERSION ? ` / api v${state.version}` : ""}
         </span>
         {role === "admin" && globals ? (
           <button onClick={() => void act("/api/pause", { paused: !globals.paused })}>

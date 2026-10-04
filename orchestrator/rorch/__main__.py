@@ -24,6 +24,7 @@ from rorch.lanes import TickLanes
 from rorch.resolver import ConfigResolver, EffectiveConfig
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX, PoolScaler
 from rorch.store import Store, open_store
+from rorch.version import get_version
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,7 +132,7 @@ def _build_runtime() -> Runtime:
 
 def _log_banner(runtime: Runtime) -> None:
     log.info("=" * 60)
-    log.info("GitHub Runner Orchestrator  —  multi-pool")
+    log.info("GitHub Runner Orchestrator v%s  —  multi-pool", get_version())
     for pool in runtime.pools:
         _log_pool(pool)
     log.info("Poll interval: %ds  (image prune every %d ticks)", runtime.poll, runtime.prune_every)

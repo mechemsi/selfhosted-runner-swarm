@@ -1,0 +1,91 @@
+name: Release
+
+# Runs after CI finishes on main, and only releases what CI proved green.
+# semantic-release reads the Conventional Commit titles since the last tag,
+# picks the version, bumps the manifests, commits CHANGELOG.md, tags vX.Y.Z and
+# creates the GitHub Release. See README "Versioning and releases".
+#
+# GitHub-hosted only: this repository is public (see ci.yml repo-rules).
+
+on:
+  workflow_run:
+    workflows: [CI]          # matches ci.yml's `name:`, not its filename
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false  # never cancel a release mid-flight
+
+jobs:
+  release:
+    name: semantic-release
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # release commit, tag, GitHub Release
+      issues: write          # "released in" comments
+      pull-requests: write
+    outputs:
+      published: ${{ steps.release.outputs.published }}
+      version: ${{ steps.release.outputs.version }}
+    env:
+      HUSKY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0             # needs history to find the last tag
+          persist-credentials: false # semantic-release pushes with GITHUB_TOKEN below
+
+      # Release exactly what CI tested. If main has moved on, the newer
+      # commit's own CI run releases both, so this run has nothing to do.
+      - name: main is still the commit CI tested
+        id: guard
+        env:
+          TESTED: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$TESTED" ]; then
+            echo "::notice::main is at $head, CI tested $TESTED; the newer run will release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          node-version: "22"
+
+      - name: semantic-release
+        id: release
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          before=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          npx --yes \
+            -p semantic-release@25.0.9 \
+            -p @semantic-release/changelog@7.0.0 \
+            -p @semantic-release/exec@7.1.0 \
+            -p @semantic-release/git@11.0.1 \
+            -p conventional-changelog-conventionalcommits@10.4.0 \
+            semantic-release
+          git fetch --tags --quiet
+          after=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -n "$after" ] && [ "$after" != "$before" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "version=${after#v}" >> "$GITHUB_OUTPUT"
+            echo "::notice::released $after"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi

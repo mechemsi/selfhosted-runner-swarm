@@ -80,6 +80,61 @@ docker compose logs -f orchestrator
 ```
 </details>
 
+## Versioning, deploy and rollback
+
+rorch is released with [semantic-release](https://semantic-release.gitbook.io/). Every
+merge to `main` that passes CI runs `.github/workflows/release.yml`, which reads the
+Conventional Commit subjects since the last tag and decides the version:
+
+| Commit subject | Release |
+|---|---|
+| `fix: ...`, `perf: ...` | patch (`v1.0.1`) |
+| `feat: ...` | minor (`v1.1.0`) |
+| `feat!: ...` or a `BREAKING CHANGE:` footer | major (`v2.0.0`) |
+| `docs:`, `chore:`, `ci:`, `refactor:`, `test:`, ... | no release |
+
+A release creates the tag `vX.Y.Z`, a GitHub Release with the notes, and a
+`chore(release)` commit that updates `CHANGELOG.md`, `orchestrator/pyproject.toml` and
+`dashboard/package.json` (+ lock). The tag points at that commit, so a tag checkout always
+knows its own version.
+
+PRs are squash-merged and the PR title becomes the commit subject, so the `pr-title`
+check enforces the Conventional Commits format on titles. Allowed types: `feat`, `fix`,
+`perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`, `style`. There is no
+`security` type: use `fix(security): ...`.
+
+The running version is visible in three places: the orchestrator's startup banner, the
+`version` field of `GET /api/health` (unauthenticated) and `/api/state`, and the dashboard
+header.
+
+### Deploy a release
+
+Deploy by tag, not by whatever `main` happens to be:
+
+```bash
+cd /opt/gh-runner
+git fetch --tags
+git checkout vX.Y.Z
+docker compose up -d --build orchestrator dashboard
+docker compose exec orchestrator python3 -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health'))['version'])"
+```
+
+The last command should print `X.Y.Z`.
+
+### Roll back
+
+Check out the previous tag and do the same:
+
+```bash
+git tag --sort=-v:refname | head -3      # find the previous release
+git checkout vX.Y.(Z-1)
+docker compose up -d --build orchestrator dashboard
+```
+
+Code rolls back; the database schema does not. The store only ever creates tables
+and indexes with `CREATE ... IF NOT EXISTS`, so an older orchestrator runs against a newer
+schema; check the release notes before rolling back across a release that says otherwise.
+
 ## Dashboard
 
 The orchestrator serves a web dashboard and JSON API on `127.0.0.1:8080`.
