@@ -28,6 +28,7 @@ from rorch.store import (
     EVENT_STUCK_KILL,
     Store,
 )
+from rorch.version import expand_image
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +48,13 @@ BUILD_RETRY_SECONDS = 300
 KEEP_LABEL = "rorch.keep=true"
 
 # The runner user must be in the group owning the socket or `docker info` fails
-# inside the runner and it exits before registering. The GID differs per host,
-# so it is baked in at build time and stamped on the image to detect staleness.
+# inside the runner and it exits before registering. The GID differs per host.
+# Current images join that group at start (entrypoint) and are labelled
+# `runtime`; images from before that baked one host's GID in at build time and
+# are labelled with it, so a mismatch means "rebuild".
 DOCKER_SOCKET = "/var/run/docker.sock"
 GID_LABEL = "rorch.docker_gid"
+RUNTIME_GID = "runtime"
 
 
 # The runner agent's work dir: checkouts, node_modules and build output. Mounted
@@ -79,6 +83,16 @@ PROTECTED_CONTAINER_PREFIXES = ("gh-runner-", "rorch-")
 def _host_docker_gid() -> int:
     """GID owning the mounted Docker socket (the host's docker group)."""
     return os.stat(DOCKER_SOCKET).st_gid
+
+
+def _is_registry_ref(image: str) -> bool:
+    """True for images that come from a registry (ghcr.io/org/img, org/img).
+
+    Those are pulled, never built here: building a published name locally would
+    shadow the real image with an untested one. Bare names (gh-runner:latest)
+    are local builds.
+    """
+    return "/" in image.partition("@")[0]
 
 
 def _pinned_runner_version(image: str) -> str:
@@ -504,71 +518,94 @@ class DockerClient:
     ]
 
     def _image_state(self, image: str, gid: int) -> str | None:
-        """None if the image is usable, else why it has to be (re)built."""
+        """None if the image is usable, else why it has to be pulled or (re)built."""
         out, code = self._capture(
             ["image", "inspect", "-f", f'{{{{index .Config.Labels "{GID_LABEL}"}}}}', image]
         )
         if code != 0:
             return "missing"
-        if out.strip() != str(gid):
-            return f"built for docker GID {out.strip() or 'unknown'}, host socket is {gid}"
-        return None
+        label = out.strip()
+        if label in (RUNTIME_GID, str(gid)):
+            return None
+        return f"built for docker GID {label or 'unknown'}, host socket is {gid}"
+
+    def _backing_off(self, image: str, reason: str, action: str) -> bool:
+        retry_at = self._build_retry_at.get(image, 0.0)
+        if time.monotonic() < retry_at:
+            log.error(
+                "✗ Image %s %s, last %s failed — spawns paused, retry in %.0fs",
+                image,
+                reason,
+                action,
+                retry_at - time.monotonic(),
+            )
+            return True
+        return False
+
+    def _pull(self, image: str, gid: int, reason: str) -> bool:
+        if self._backing_off(image, reason, "pull"):
+            return False
+        log.warning("Image %s %s — pulling", image, reason)
+        if self._exec(["pull", image]) != 0:
+            self._build_retry_at[image] = time.monotonic() + BUILD_RETRY_SECONDS
+            log.error(
+                "✗ Pull of %s failed — spawns paused for %ds. If the package is private, "
+                "`docker login ghcr.io` on the host; for a local build set runner_image "
+                "to gh-runner:latest",
+                image,
+                BUILD_RETRY_SECONDS,
+            )
+            return False
+        after = self._image_state(image, gid)
+        if after is not None:
+            log.error("✗ Pulled %s but it is still unusable: %s", image, after)
+            return False
+        log.info("✓ Pulled %s", image)
+        return True
 
     def ensure_image(self, image: str) -> bool:
-        """Check the image is present and usable, building it from the mounted context if not.
+        """Check the image is present and usable, pulling or building it if not.
 
         Two ways a runner dies before it ever registers: the image is gone (spawn
         tries to pull a locally-built tag from a registry it was never pushed to)
         or it was built for the wrong docker GID (the runner can't read the
         socket, entrypoint aborts, cleanup removes the evidence).
+
+        Registry images (ghcr.io/...) are pulled. Bare local names are built
+        from the mounted context, the development fallback.
         # ponytail: one build context for every pool, so a pool with a custom
         # runner_image just pauses instead of building the wrong Dockerfile.
         """
+        image = expand_image(image)
         with self._build_lock:
             gid = _host_docker_gid()
             reason = self._image_state(image, gid)
             if reason is None:
                 return True
 
+            if _is_registry_ref(image):
+                return self._pull(image, gid, reason)
+
             if not Path(RUNNER_BUILD_CONTEXT, "Dockerfile").exists():
                 log.error(
                     "✗ Image %s %s and no build context at %s — spawns paused (build it "
-                    "on the host: docker build --build-arg DOCKER_GID=%d -t %s ./runner-image)",
+                    "on the host: ./scripts/build-runner.sh, or use a published image)",
                     image,
                     reason,
                     RUNNER_BUILD_CONTEXT,
-                    gid,
-                    image,
                 )
                 return False
 
-            retry_at = self._build_retry_at.get(image, 0.0)
-            if time.monotonic() < retry_at:
-                log.error(
-                    "✗ Image %s %s, last build failed — spawns paused, retry in %.0fs",
-                    image,
-                    reason,
-                    retry_at - time.monotonic(),
-                )
+            if self._backing_off(image, reason, "build"):
                 return False
 
             log.warning(
-                "Image %s %s — building from %s with DOCKER_GID=%d (takes a few minutes)",
+                "Image %s %s — building from %s (takes a few minutes)",
                 image,
                 reason,
                 RUNNER_BUILD_CONTEXT,
-                gid,
             )
-            build = [
-                "build",
-                "--build-arg",
-                f"DOCKER_GID={gid}",
-                "--label",
-                f"{GID_LABEL}={gid}",
-                "-t",
-                image,
-                RUNNER_BUILD_CONTEXT,
-            ]
+            build = ["build", "-t", image, RUNNER_BUILD_CONTEXT]
             # A pool pinned to gh-runner:2.328.0 must get that agent, not the
             # Dockerfile default under a misleading tag.
             pinned = _pinned_runner_version(image)
@@ -582,16 +619,17 @@ class DockerClient:
                 )
                 return False
 
-            log.info("✓ Built %s (docker GID %d)", image, gid)
+            log.info("✓ Built %s", image)
             return True
 
     def spawn_runner(self, pool: PoolConfig) -> bool:
         """Start a new ephemeral runner container."""
-        if not self.ensure_image(pool.runner_image):
+        image = expand_image(pool.runner_image)
+        if not self.ensure_image(image):
             self._record(
                 EVENT_SPAWN_FAILED,
                 pool=pool.name,
-                reason=f"image {pool.runner_image} unusable",
+                reason=f"image {image} unusable",
             )
             return False
 
@@ -655,7 +693,7 @@ class DockerClient:
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])
 
-        args.append(pool.runner_image)
+        args.append(image)
         code = self._exec(args)
 
         cpu_info = f" cpus={pool.cpu_limit}" if pool.cpu_limit > 0 else " cpus=unlimited"

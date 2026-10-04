@@ -24,7 +24,12 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Images are published by the release workflow. Pin RORCH_VERSION in .env
+  # (e.g. v1.1.0) and deploy with `docker compose pull && docker compose up -d`.
+  # `build:` stays for development: `docker compose up -d --build` builds
+  # locally under the same name instead of pulling.
   orchestrator:
+    image: ghcr.io/mechemsi/rorch-orchestrator:${RORCH_VERSION:-latest}
     build: ./orchestrator
     container_name: gh-runner-orchestrator
     restart: unless-stopped
@@ -46,7 +51,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # manage runner containers
       - ./config.yml:/app/config.yml:ro             # pool config (hot-reload on restart)
-      - ./runner-image:/app/runner-image:ro         # build context: rebuilds gh-runner if missing
+      - ./runner-image:/app/runner-image:ro         # dev fallback: builds a bare-named runner_image (gh-runner:latest) if missing
     logging:
       driver: json-file
       options:
@@ -54,6 +59,7 @@ services:
         max-file: "3"
 
   dashboard:
+    image: ghcr.io/mechemsi/rorch-dashboard:${RORCH_VERSION:-latest}
     build: ./dashboard
     container_name: rorch-dashboard
     restart: unless-stopped

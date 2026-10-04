@@ -20,6 +20,13 @@ AUTO_WORK_TMPFS_FALLBACK = "4g"
 DEFAULT_CI_CONTAINER_MAX_AGE = 360
 
 
+# The runner image published by this repo's release workflow. `{version}` is the
+# orchestrator's own version (rorch.version.expand_image), so deploying or rolling
+# back the orchestrator moves the runners with it. A bare local name such as
+# gh-runner:latest (scripts/build-runner.sh) is built on the host instead.
+DEFAULT_RUNNER_IMAGE = "ghcr.io/mechemsi/rorch-runner:{version}"
+
+
 @dataclass
 class PoolConfig:
     """Configuration for a single runner pool."""
@@ -40,7 +47,7 @@ class PoolConfig:
     max_runners: int = 3
     min_idle: int = 1
     runner_labels: str = "self-hosted,linux,x64,docker"
-    runner_image: str = "gh-runner:latest"
+    runner_image: str = DEFAULT_RUNNER_IMAGE
     memory_limit: str = "2g"
     cpu_limit: float = 0.0
     # Size of the tmpfs mounted over the runner work dir (checkouts, node_modules,
@@ -254,7 +261,7 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
 
     defaults = raw.get("defaults", {})
     global_pat = resolve_env(defaults.get("pat", "")) or os.environ.get("GITHUB_PAT", "")
-    global_image = defaults.get("runner_image", "gh-runner:latest")
+    global_image = defaults.get("runner_image", DEFAULT_RUNNER_IMAGE)
     global_labels = defaults.get("runner_labels", "self-hosted,linux,x64,docker")
     global_max = defaults.get("max_runners", 3)
     global_min = defaults.get("min_idle", 1)
@@ -323,7 +330,7 @@ def _load_from_env() -> PoolConfig:
         max_runners=int(os.environ.get("MAX_RUNNERS", "3")),
         min_idle=int(os.environ.get("MIN_IDLE", "0" if scope == "personal" else "1")),
         runner_labels=os.environ.get("RUNNER_LABELS", "self-hosted,linux,x64,docker"),
-        runner_image=os.environ.get("RUNNER_IMAGE", "gh-runner:latest"),
+        runner_image=os.environ.get("RUNNER_IMAGE", DEFAULT_RUNNER_IMAGE),
         network_mode=os.environ.get("RUNNER_NETWORK_MODE", "host").lower(),
         work_tmpfs_size=os.environ.get("RUNNER_WORK_TMPFS_SIZE", "auto").strip(),
         include_public_repos=os.environ.get("INCLUDE_PUBLIC_REPOS", "").lower()

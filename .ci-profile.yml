@@ -4,10 +4,17 @@
 
 platform: github            # GitHub Actions (not Gitea)
 
-deploys: false              # No deploy pipeline. rorch is run by the operator with
-                            # `make up` on the host that owns the Docker socket.
-                            # Consequence: no registry push, no provenance, no
-                            # environment protection, no rollback trigger.
+deploys: false              # No deploy pipeline. The operator pulls a release on
+                            # the host that owns the Docker socket (`make deploy`).
+                            # Consequence: no environment protection, no automated
+                            # rollback trigger; rollback = previous RORCH_VERSION.
+
+registry_push: ghcr         # release.yml builds, scans (advisory, no write token)
+                            # and pushes orchestrator, dashboard and runner images
+                            # to ghcr.io/mechemsi/rorch-* with provenance, and
+                            # appends their digests to the release notes. The host
+                            # never builds: its disk is slow and the artefact run
+                            # should be the artefact scanned.
 
 consumed_as_dependency: false   # Nothing imports rorch as a library.
 
@@ -54,7 +61,6 @@ not_applicable:
   bundle_size: "No browser bundler — dashboard.html ships as-is."
   ai_evals: "No LLM SDK in dependencies."
   iac: "No terraform/, k8s/ or helm/."
-  registry_push: "See deploys: false."
 
 known_gaps:
   - "Actions are pinned to major tags (@v4), not commit SHAs. The ci-cd skill wants SHAs for repos that touch self-hosted runners. Pin them on the next CI pass — it needs network access to resolve each SHA."

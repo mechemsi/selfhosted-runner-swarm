@@ -57,3 +57,17 @@ def resolve_version(env: Mapping[str, str] | None = None, pyproject: Path = PYPR
 @lru_cache(maxsize=1)
 def get_version() -> str:
     return resolve_version()
+
+
+# `{version}` in runner_image resolves to the orchestrator's own release, so a
+# deploy (or rollback) of the orchestrator moves the runners with it.
+VERSION_PLACEHOLDER = "{version}"
+
+
+def expand_image(image: str, version: str | None = None) -> str:
+    """Substitute `{version}` in an image reference; `latest` if unreleased."""
+    if VERSION_PLACEHOLDER not in image:
+        return image
+    resolved = get_version() if version is None else version
+    tag = resolved if resolved and resolved != UNKNOWN else "latest"
+    return image.replace(VERSION_PLACEHOLDER, tag)
