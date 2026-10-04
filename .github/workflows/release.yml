@@ -4,8 +4,18 @@ name: Release
 # semantic-release reads the Conventional Commit titles since the last tag,
 # picks the version, bumps the manifests, commits CHANGELOG.md, tags vX.Y.Z and
 # creates the GitHub Release. Then the three images are built from the tag,
-# scanned, pushed to GHCR and their digests appended to the release notes.
-# The host only pulls them. See README "Versioning, deploy and rollback".
+# pushed to GHCR, their digests appended to the release notes, and the pushed
+# digests scanned. The host only pulls them. See README "Versioning, deploy
+# and rollback".
+#
+# Trust boundary: jobs holding a write token (release, image-push,
+# record-digests) run only first-party or Docker-official actions, pinned to
+# SHAs. Third-party code (the Trivy scanner) runs last, in its own job, with
+# read-only permissions, no build and no shared build cache, so it cannot
+# poison what a privileged job ships. The build cache is a registry cache
+# (ghcr.io/...:buildcache) that only image-push can write (packages: write);
+# no GitHub Actions cache is used, since any step in any job of the run can
+# write that one.
 #
 # Image jobs live here, not in an `on: push: tags` workflow: a tag pushed with
 # GITHUB_TOKEN does not start other workflows.
@@ -95,65 +105,14 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Build and scan without any write token: the scanner is third-party code.
-  # The push job below rebuilds from the same GHA cache, so every layer is a
-  # cache hit and it ships what was scanned here.
-  image-scan:
-    name: image-scan (${{ matrix.image }})
+  # Trusted job: first-party and Docker-official actions only, no third-party
+  # code. Builds from the tag, pushes, attests.
+  image-push:
+    name: image-push (${{ matrix.image }})
     needs: release
     if: needs.release.outputs.published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90      # the runner image compiles Python on a cold cache
-    strategy:
-      fail-fast: true
-      matrix:
-        image: [orchestrator, dashboard, runner]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: v${{ needs.release.outputs.version }}
-          persist-credentials: false
-
-      - name: Build context
-        id: ctx
-        env:
-          IMAGE: ${{ matrix.image }}
-        run: |
-          case "$IMAGE" in
-            orchestrator) echo "dir=./orchestrator" >> "$GITHUB_OUTPUT" ;;
-            dashboard)    echo "dir=./dashboard" >> "$GITHUB_OUTPUT" ;;
-            runner)       echo "dir=./runner-image" >> "$GITHUB_OUTPUT" ;;
-          esac
-
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
-        with:
-          context: ${{ steps.ctx.outputs.dir }}
-          platforms: linux/amd64
-          load: true
-          tags: rorch-${{ matrix.image }}:scan
-          build-args: RORCH_BUILD_VERSION=${{ needs.release.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-
-      # Advisory, as in ci.yml: the runner image is Ubuntu with a full CI
-      # toolchain, so a clean report is unrealistic. Promote to blocking on
-      # CRITICAL once the findings are triaged.
-      - name: Scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        continue-on-error: true
-        with:
-          image-ref: rorch-${{ matrix.image }}:scan
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-
-  image-push:
-    name: image-push (${{ matrix.image }})
-    needs: [release, image-scan]
-    if: needs.release.outputs.published == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
     permissions:
       contents: read
       packages: write        # GHCR, with GITHUB_TOKEN: no long-lived credential
@@ -218,7 +177,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: RORCH_BUILD_VERSION=${{ needs.release.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
+          # Registry cache: writing it needs packages: write, which only this
+          # job has. Never type=gha (writable from any job in the run).
+          cache-from: type=registry,ref=${{ env.REF }}:buildcache
+          cache-to: type=registry,ref=${{ env.REF }}:buildcache,mode=max
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
@@ -226,36 +188,26 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      - name: Record digest
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-          IMAGE: ${{ matrix.image }}
-        run: |
-          mkdir -p digests
-          echo "$REF:$VERSION@$DIGEST" > "digests/$IMAGE"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: digest-${{ matrix.image }}
-          path: digests/${{ matrix.image }}
-          retention-days: 7
-
   # Tags are for humans, digests are for machines: the release notes carry the
   # immutable reference for each image, which is what a pinned deploy or a
-  # rollback uses.
-  release-notes:
+  # rollback uses. Digests are read back from the registry (only image-push can
+  # write those tags), not passed through artifacts another job could upload.
+  record-digests:
     name: record digests
     needs: [release, image-push]
     if: needs.release.outputs.published == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # edit the release notes
+      packages: read
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
-          pattern: digest-*
-          merge-multiple: true
-          path: digests
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Append images to the release notes
         env:
@@ -271,7 +223,52 @@ jobs:
             echo "Deploy: \`RORCH_VERSION=$TAG docker compose pull && docker compose up -d\`"
             echo
             echo '```'
-            cat digests/orchestrator digests/dashboard digests/runner
+            for image in orchestrator dashboard runner; do
+              ref="ghcr.io/mechemsi/rorch-$image:$VERSION"
+              digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest)
+              echo "$ref@$digest"
+            done
             echo '```'
           } >> notes.md
           gh release edit "$TAG" --notes-file notes.md
+
+  # Untrusted job: third-party scanner, read-only permissions, no build, no
+  # cache, nothing downstream depends on it. Scans the exact pushed digest.
+  # Advisory, as in ci.yml: the runner image is Ubuntu with a full CI
+  # toolchain, so a clean report is unrealistic. Promote to blocking on
+  # CRITICAL once the findings are triaged.
+  image-scan:
+    name: image-scan (${{ matrix.image }})
+    needs: [release, image-push]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read         # pull the image while the package is still private
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [orchestrator, dashboard, runner]
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the pushed digest
+        id: ref
+        env:
+          REF: ghcr.io/mechemsi/rorch-${{ matrix.image }}:${{ needs.release.outputs.version }}
+        run: |
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "image=${REF%:*}@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.ref.outputs.image }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true

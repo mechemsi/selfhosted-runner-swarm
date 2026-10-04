@@ -9,12 +9,17 @@ deploys: false              # No deploy pipeline. The operator pulls a release o
                             # Consequence: no environment protection, no automated
                             # rollback trigger; rollback = previous RORCH_VERSION.
 
-registry_push: ghcr         # release.yml builds, scans (advisory, no write token)
-                            # and pushes orchestrator, dashboard and runner images
-                            # to ghcr.io/mechemsi/rorch-* with provenance, and
-                            # appends their digests to the release notes. The host
-                            # never builds: its disk is slow and the artefact run
-                            # should be the artefact scanned.
+registry_push: ghcr         # release.yml builds and pushes orchestrator, dashboard
+                            # and runner images to ghcr.io/mechemsi/rorch-* with
+                            # provenance, appends their digests to the release
+                            # notes, then scans the pushed digests (advisory). The
+                            # host never builds: its disk is slow.
+                            # Trust boundary: write-token jobs run first-party or
+                            # Docker-official actions only; the third-party scanner
+                            # runs last, read-only, sharing no build cache. Build
+                            # cache is a GHCR registry cache only image-push can
+                            # write. Never use type=gha cache in release.yml: any
+                            # step of any job in the run can write it.
 
 consumed_as_dependency: false   # Nothing imports rorch as a library.
 
