@@ -184,14 +184,18 @@ class GitHubClient:
     def rate_limit_status(self) -> dict[str, Any]:
         """Last-seen API budget, for the dashboard. Read-only, makes no API call.
 
-        Deliberately lock-free: these are plain attribute reads of values
-        written under `_state_lock`, so the worst case is a status one tick
-        stale, and a dashboard refresh never waits on scaler bookkeeping.
+        Read under `_state_lock` so `remaining` and `reset_at` come from the
+        same response: the API serves requests on several threads while pool
+        ticks update these. The lock only ever guards dictionary work, never
+        network I/O, so a dashboard refresh does not wait on a GitHub request.
         """
-        blocked_until = self._blocked_until_any
+        with self._state_lock:
+            remaining = self._last_remaining
+            reset_at = self._last_reset_at
+            blocked_until = self._blocked_until_any
         return {
-            "remaining": self._last_remaining,
-            "reset_at": self._last_reset_at,
+            "remaining": remaining,
+            "reset_at": reset_at,
             "reserve": self._rate_limit_reserve,
             "blocked_until": blocked_until if blocked_until > self._wall_clock() else 0.0,
         }

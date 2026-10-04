@@ -104,19 +104,41 @@ def idempotent(view: Callable[..., Any]) -> Callable[..., Any]:
         key = request.headers.get("Idempotency-Key", "")
         if not key:
             return view(*args, **kwargs)
-        store = _deps().store
+        deps = _deps()
         scoped = f"{request.method}:{request.path}:{key}"
-        cached = store.idempotent_response(scoped)
-        if cached is not None:
-            response = make_response(cached)
-            response.mimetype = "application/json"
-            response.headers["Idempotency-Replayed"] = "true"
-            return response
-        result = view(*args, **kwargs)
-        body, status = result if isinstance(result, tuple) else (result, 200)
-        if 200 <= status < 300:
-            store.remember_response(scoped, body.get_data(as_text=True))
-        return result
+        if not deps.in_flight.claim(scoped):
+            # Same answer as Stripe's API: the first attempt is still running,
+            # retry later and get its response replayed.
+            return jsonify(error="a request with this Idempotency-Key is in progress"), 409
+        try:
+            cached = deps.store.idempotent_response(scoped)
+            if cached is not None:
+                response = make_response(cached)
+                response.mimetype = "application/json"
+                response.headers["Idempotency-Replayed"] = "true"
+                return response
+            result = view(*args, **kwargs)
+            body, status = result if isinstance(result, tuple) else (result, 200)
+            if 200 <= status < 300:
+                deps.store.remember_response(scoped, body.get_data(as_text=True))
+            return result
+        finally:
+            deps.in_flight.release(scoped)
+
+    return wrapper
+
+
+def serialized(view: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a read-modify-write config edit under the config lock.
+
+    Requests are handled on several threads at once; this keeps two edits
+    from interleaving between reading the overlay and writing it back.
+    """
+
+    @wraps(view)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _deps().config_lock:
+            return view(*args, **kwargs)
 
     return wrapper
 

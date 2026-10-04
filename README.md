@@ -186,6 +186,14 @@ all applied on the next tick with no restart.
 > recorded in an audit log. Put a real reverse proxy with its own auth in front before
 > exposing it beyond the host.
 
+The API is served by [waitress](https://docs.pylonsproject.org/projects/waitress/), a
+production WSGI server, from 8 threads inside the orchestrator process: it reads the
+scaling loop's live state, so it cannot run as separate worker processes. Successful
+requests are logged at `DEBUG`, so dashboard polling stays out of `make logs`; client
+errors (a bad token, an unknown pool) are logged at `INFO` and server errors at `WARNING`.
+`docker stop` sends `SIGTERM`, which stops the loop and the server cleanly; the process
+exits as soon as any tick already in progress returns.
+
 ### API
 
 Authenticate with `Authorization: Bearer $RORCH_API_TOKEN`.

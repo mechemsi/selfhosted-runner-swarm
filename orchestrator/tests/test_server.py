@@ -3,6 +3,16 @@
 
 """Tests for the dashboard API: auth, control actions, config editing, metrics."""
 
+import http.client
+import json
+import logging
+import socket
+import threading
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,6 +25,7 @@ from rorch.protocols import ContainerInfo
 from rorch.resolver import ConfigResolver
 from rorch.server import (
     MAX_TOKEN_FAILURES,
+    ApiServer,
     Deps,
     TokenGuard,
     create_app,
@@ -526,3 +537,190 @@ class TestTokenPersistence:
 
         for path in ("/api/state", "/api/config", "/api/config/export", "/metrics"):
             assert token not in client.get(path, headers=headers).get_data(as_text=True), path
+
+
+def _get(url: str, timeout: float = 5.0) -> tuple[int, dict[str, str], dict[str, Any]]:
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return response.status, dict(response.headers), json.loads(response.read())
+
+
+def _post(url: str, body: dict[str, Any], headers: dict[str, str]) -> int:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+@pytest.fixture
+def served(deps: Deps) -> Iterator[tuple[ApiServer, str]]:
+    """The real production server on an ephemeral loopback port."""
+    server = start(deps, host="127.0.0.1", port=0)
+    assert server is not None
+    yield server, f"http://127.0.0.1:{server.port}"
+    server.stop()
+
+
+class TestProductionServer:
+    def test_serves_health_through_waitress(self, served: tuple[ApiServer, str]) -> None:
+        _, base = served
+        status, headers, body = _get(f"{base}/api/health")
+
+        assert status == 200
+        assert body["status"] == "ok"
+        # Not Werkzeug's development server.
+        assert headers["Server"] == "rorch"
+
+    def test_handles_requests_concurrently(
+        self, served: tuple[ApiServer, str], docker: MagicMock
+    ) -> None:
+        _, base = served
+        parties = 4
+        barrier = threading.Barrier(parties, timeout=5)
+        listing = docker.container_details.return_value
+
+        def slow_listing(_prefix: str) -> list[ContainerInfo]:
+            # Every request blocks here until all of them have arrived, so this
+            # only passes if the server runs `parties` handlers at once.
+            barrier.wait()
+            return listing
+
+        docker.container_details.side_effect = slow_listing
+        with ThreadPoolExecutor(max_workers=parties) as pool:
+            results = list(pool.map(lambda _: _get(f"{base}/api/state"), range(parties)))
+
+        assert [status for status, _, _ in results] == [200] * parties
+        assert all(body["containers"] for _, _, body in results)
+
+    def test_stop_closes_idle_keep_alive_connections(self, served: tuple[ApiServer, str]) -> None:
+        server, _ = served
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        connection.request("GET", "/api/health")
+        assert connection.getresponse().read()  # leaves the connection open
+
+        started = time.monotonic()
+        assert server.stop() is True
+        assert time.monotonic() - started < 3
+        assert not server.thread.is_alive()
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", server.port), timeout=1).close()
+        connection.close()
+
+    def test_stop_lets_an_in_flight_request_finish(
+        self, served: tuple[ApiServer, str], docker: MagicMock
+    ) -> None:
+        server, base = served
+        entered = threading.Event()
+
+        def slow_logs(_name: str, tail: int = 200) -> str:
+            entered.set()
+            time.sleep(0.3)
+            return "done"
+
+        docker.container_logs.side_effect = slow_logs
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(
+                urllib.request.urlopen, f"{base}/api/containers/gh-runner-test-pool-abc/logs"
+            )
+            assert entered.wait(5)
+            assert server.stop() is True
+            assert pending.result(timeout=5).read() == b"done"
+
+    def test_concurrent_retry_with_the_same_key_spawns_once(
+        self, served: tuple[ApiServer, str], docker: MagicMock
+    ) -> None:
+        _, base = served
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_spawn(_pool: PoolConfig) -> bool:
+            entered.set()
+            assert release.wait(5)
+            return True
+
+        docker.spawn_runner.side_effect = slow_spawn
+        url = f"{base}/api/pools/test-pool/scale"
+        headers = {"Idempotency-Key": "timeout-retry"}
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(_post, url, {"delta": 1}, headers)
+            assert entered.wait(5)
+            # A client that timed out and retried while the first is still running.
+            assert _post(url, {"delta": 1}, headers) == 409
+            release.set()
+            assert first.result(timeout=5) == 200
+
+        assert _post(url, {"delta": 1}, headers) == 200  # replayed now
+        docker.spawn_runner.assert_called_once()
+
+    def test_concurrent_config_edits_both_persist(
+        self, served: tuple[ApiServer, str], store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, base = served
+        read_overrides = store.pool_overrides
+
+        def slow_read() -> dict[str, dict[str, Any]]:
+            # Widen the read-then-write window so unserialised edits would lose one.
+            rows = read_overrides()
+            time.sleep(0.05)
+            return rows
+
+        monkeypatch.setattr(store, "pool_overrides", slow_read)
+        url = f"{base}/api/config/pools/test-pool"
+
+        def patch(body: dict[str, Any]) -> int:
+            request = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+                method="PATCH",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(patch, [{"max_runners": 4}, {"min_idle": 0}]))
+
+        assert statuses == [200, 200]
+        assert read_overrides()["test-pool"]["data"] == {"max_runners": 4, "min_idle": 0}
+
+
+class TestRequestLogging:
+    def test_successful_polls_stay_out_of_info_logs(
+        self, client: FlaskClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger="rorch.server.app"):
+            client.get("/api/state")
+
+        [record] = [r for r in caplog.records if r.name == "rorch.server.app"]
+        assert record.levelno == logging.DEBUG
+        assert "GET /api/state 200" in record.getMessage()
+
+    def test_client_errors_are_visible_at_info(
+        self, deps: Deps, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        deps.token = "s3cret"
+        with caplog.at_level(logging.INFO, logger="rorch.server.app"):
+            create_app(deps).test_client().get("/api/state")
+
+        assert any(
+            r.levelno == logging.INFO and "GET /api/state 401" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_server_errors_are_warnings(
+        self, deps: Deps, docker: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        docker.container_details.side_effect = RuntimeError("docker down")
+        client = create_app(deps).test_client()  # not TESTING: errors become 500s
+        with caplog.at_level(logging.INFO, logger="rorch.server.app"):
+            assert client.get("/api/state").status_code == 500
+
+        assert any(
+            r.levelno == logging.WARNING and "GET /api/state 500" in r.getMessage()
+            for r in caplog.records
+        )
