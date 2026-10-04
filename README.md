@@ -154,7 +154,7 @@ secrets stay in `.env`.
 |----------|---------|-------------|
 | `GITHUB_PAT` | — | Primary GitHub PAT (required) |
 | `POLL_INTERVAL` | `15` | Main loop wake-up interval |
-| `POOL_TICK_WORKERS` | `8` | Pools that can tick at the same time (1-64); size it to at least the number of pools |
+| `POOL_TICK_WORKERS` | one per pool, at least `8` | Pools that can tick at the same time (1-64) |
 | `GITHUB_MAX_CONCURRENT_REQUESTS` | `8` | GitHub requests in flight at once, across all pools (1-32) |
 | `REPO_DISCOVERY_TTL` | `600` | Personal repository-list cache lifetime in seconds |
 | `GITHUB_POLL_INTERVAL` | `60` | Minimum seconds between GitHub scans for each pool |
