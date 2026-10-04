@@ -3,6 +3,7 @@
 
 """Tests for the scaling logic."""
 
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -440,6 +441,97 @@ class TestGlobalRunnerCap:
         PoolScaler(mock_github, mock_docker, max_total_runners=4).tick(personal_pool)
 
         assert mock_docker.spawn_runner.call_count == 1
+
+
+class TestGlobalRunnerCapUnderConcurrentTicks:
+    """Pools tick on separate threads; together they must still respect the cap."""
+
+    @staticmethod
+    def _docker(spawn_delay: float = 0.05) -> tuple[MagicMock, list[str]]:
+        """A Docker double whose `ps` only sees a runner once `docker run` returned."""
+        started: list[str] = []
+        lock = threading.Lock()
+        docker = MagicMock()
+
+        def running(prefix: str) -> list[str]:
+            with lock:
+                return [name for name in started if name.startswith(prefix)]
+
+        def spawn(spawn_pool: PoolConfig) -> bool:
+            time.sleep(spawn_delay)  # docker run is slow; ps cannot see it yet
+            with lock:
+                started.append(f"{spawn_pool.container_prefix}-{len(started)}")
+            return True
+
+        docker.running_containers.side_effect = running
+        docker.spawn_runner.side_effect = spawn
+        return docker, started
+
+    @staticmethod
+    def _tick_together(scaler: PoolScaler, pools: list[PoolConfig]) -> None:
+        threads = [threading.Thread(target=scaler.tick, args=(item,)) for item in pools]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+    def test_two_pools_spawning_at_once_never_exceed_the_cap(
+        self, mock_github: MagicMock, pool: PoolConfig
+    ) -> None:
+        pools = [replace(pool, name="alpha", min_idle=0), replace(pool, name="beta", min_idle=0)]
+        mock_github.list_runners.return_value = []
+        mock_github.get_queued_count.return_value = 3
+        # Both pools finish inspecting at the same moment, then decide.
+        barrier = Barrier(2, timeout=5)
+        mock_github.get_queued_count.side_effect = lambda *_args: (barrier.wait(), 3)[1]
+        docker, started = self._docker()
+        scaler = PoolScaler(mock_github, docker, max_total_runners=4)
+
+        self._tick_together(scaler, pools)
+
+        # Each wants 3; without an atomic reservation both see 0 running and start 6.
+        assert len(started) == 4
+        assert scaler._reserved_spawns == 0
+
+    def test_personal_and_single_pools_share_the_cap(
+        self, mock_github: MagicMock, pool: PoolConfig, personal_pool: PoolConfig
+    ) -> None:
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_github.list_runners.return_value = []
+        barrier = Barrier(3, timeout=5)  # the single pool + two personal repositories
+        mock_github.get_queued_count.side_effect = lambda *_args: (barrier.wait(), 2)[1]
+        docker, started = self._docker()
+        scaler = PoolScaler(mock_github, docker, max_total_runners=3)
+
+        self._tick_together(scaler, [replace(pool, min_idle=0), personal_pool])
+
+        assert len(started) == 3
+        assert scaler._reserved_spawns == 0
+
+    def test_reservation_is_returned_when_a_spawn_raises(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        mock_github.get_queued_count.return_value = 2
+        mock_github.list_runners.return_value = []
+        mock_docker.running_containers.return_value = []
+        mock_docker.spawn_runner.side_effect = RuntimeError("docker down")
+        scaler = PoolScaler(mock_github, mock_docker, max_total_runners=5)
+
+        scaler.tick(pool)
+
+        assert mock_docker.spawn_runner.call_count == 2
+        assert scaler._reserved_spawns == 0
+
+    def test_in_flight_spawns_count_against_another_pools_headroom(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        mock_docker.running_containers.return_value = []
+        scaler = PoolScaler(mock_github, mock_docker, max_total_runners=4)
+
+        assert scaler._reserve_spawns("alpha", 3) == 3
+        assert scaler._reserve_spawns("beta", 3) == 1
+        scaler._release_spawns(4)
+        assert scaler._reserve_spawns("beta", 3) == 3
 
 
 class TestPauseAndDrain:
