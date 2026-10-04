@@ -4,6 +4,8 @@
 """Tests for GitHub API repository discovery."""
 
 import io
+import threading
+import time
 import urllib.error
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -356,3 +358,65 @@ class TestQueuedCount:
 
         assert client.get_queued_count(personal_pool) == 0
         assert "lower bound" in caplog.text
+
+
+class TestRequestConcurrency:
+    """Requests overlap up to a bound; they used to share one lock across the HTTP call."""
+
+    @staticmethod
+    def _get_in_threads(client: GitHubClient, urlopen: object, count: int) -> None:
+        with patch("urllib.request.urlopen", side_effect=urlopen):
+            threads = [
+                threading.Thread(target=client._get, args=("token", f"/repos/o/r{index}"))
+                for index in range(count)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+    def test_requests_from_different_threads_run_concurrently(self) -> None:
+        client = GitHubClient(rate_limit_reserve=0, max_concurrent_requests=3)
+        # Each request waits until all three are in flight together: under a
+        # global request lock the barrier would time out.
+        barrier = threading.Barrier(3, timeout=2)
+        overlapped: list[bool] = []
+
+        def urlopen(*_args: object, **_kwargs: object) -> MagicMock:
+            barrier.wait()
+            overlapped.append(True)
+            return _response(b"{}", {})
+
+        self._get_in_threads(client, urlopen, 3)
+
+        assert overlapped == [True, True, True]
+
+    def test_requests_in_flight_never_exceed_the_bound(self) -> None:
+        client = GitHubClient(rate_limit_reserve=0, max_concurrent_requests=2)
+        lock = threading.Lock()
+        in_flight = 0
+        peak = 0
+
+        def urlopen(*_args: object, **_kwargs: object) -> MagicMock:
+            nonlocal in_flight, peak
+            with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            time.sleep(0.05)
+            with lock:
+                in_flight -= 1
+            return _response(b"{}", {})
+
+        self._get_in_threads(client, urlopen, 6)
+
+        assert peak == 2
+
+    def test_mutations_stay_paced(self) -> None:
+        sleeps: list[float] = []
+        client = GitHubClient(rate_limit_reserve=0, sleep=sleeps.append, wall_clock=lambda: 100.0)
+
+        with patch("urllib.request.urlopen", return_value=_response(b"", {}, status=204)):
+            assert client._delete("token", "/runners/1") is True
+            assert client._delete("token", "/runners/2") is True
+
+        assert sleeps == [1.0]
