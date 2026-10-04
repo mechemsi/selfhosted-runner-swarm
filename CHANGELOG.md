@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.0.0...v1.1.0) (2026-10-04)
+
+### Features
+
+* publish images to GHCR on release and pull them on the host ([#26](https://github.com/mechemsi/selfhosted-runner-swarm/issues/26)) ([949d358](https://github.com/mechemsi/selfhosted-runner-swarm/commit/949d35864e03cfba4eb1a9fad333ca1330e9ec9c))
+
 ## 1.0.0 (2026-10-04)
 
 ### Features
