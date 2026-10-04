@@ -4,6 +4,7 @@
 """Tests for the scaling logic."""
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import MagicMock
@@ -552,3 +553,33 @@ class TestStoreRecording:
         PoolScaler(mock_github, mock_docker, store=broken).tick(pool)
 
         assert mock_docker.spawn_runner.call_count == 2
+
+
+class TestStuckReaperInputs:
+    def test_busy_runner_reported_offline_is_not_a_stuck_candidate(
+        self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        """Under load GitHub flags working runners offline; busy must still protect them."""
+        mock_docker.running_containers.return_value = [
+            "gh-runner-test-pool-busy0001",
+            "gh-runner-test-pool-idle0001",
+            "gh-runner-test-pool-gone0001",
+        ]
+        mock_github.list_runners.return_value = [
+            RunnerInfo(id=1, name="gh-runner-test-pool-busy0001", status="offline", busy=True),
+            RunnerInfo(id=2, name="gh-runner-test-pool-idle0001", status="online", busy=False),
+            RunnerInfo(id=3, name="gh-runner-test-pool-gone0001", status="offline", busy=False),
+        ]
+
+        scaler.tick(pool, PoolState())
+
+        prefix, alive = mock_docker.cleanup_stuck.call_args.args
+        assert prefix == pool.container_prefix
+        assert alive == {"gh-runner-test-pool-busy0001", "gh-runner-test-pool-idle0001"}
+
+    def test_timeout_comes_from_the_pool(
+        self, scaler: PoolScaler, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        scaler.tick(replace(pool, stuck_timeout=12), PoolState())
+
+        assert mock_docker.cleanup_stuck.call_args.kwargs == {"timeout_minutes": 12}

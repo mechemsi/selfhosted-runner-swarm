@@ -270,10 +270,14 @@ class PoolScaler:
 
         self._record_runner_status(pool, runner_list, prefix)
 
+        # Busy counts even when GitHub reports the runner offline: under load it
+        # transiently flags working runners offline, and killing one fails its job
+        # with "lost communication with the server".
+        alive_names = online_names | {runner.name for runner in runner_list if runner.busy}
         self._docker.cleanup_stuck(
             prefix,
-            running_names & online_names,
-            timeout_minutes=3,
+            running_names & alive_names,
+            timeout_minutes=pool.stuck_timeout,
         )
         # The queue scan already fetches every job of every active run, so
         # collecting them here is free and answers "what did this runner run".

@@ -78,6 +78,11 @@ defaults:
   max_runners:   3
   min_idle:      1
   github_poll_interval: 60      # minimum seconds between API scans for each pool
+  # Minutes a runner container may run without GitHub listing it online or busy
+  # before it is killed as stuck (never registered). A container with a job in
+  # progress (Runner.Worker alive inside it) is never killed. Raise it if the
+  # host registers runners slowly under load. 1-1440.
+  stuck_timeout: 8
   repo_check_workers: 6         # concurrent GitHub/Docker repository inspections (max 32)
   runner_operation_workers: 4  # concurrent removals and provisions (max 16)
   memory_limit:  10g      # RAM per runner — set to (total LXC RAM - 2g) ÷ max_runners

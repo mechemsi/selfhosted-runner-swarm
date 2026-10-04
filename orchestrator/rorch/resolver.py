@@ -34,6 +34,7 @@ TUNABLE_FIELDS = frozenset(
         "work_tmpfs_size",
         "repo_discovery_ttl",
         "github_poll_interval",
+        "stuck_timeout",
         "repo_check_workers",
         "runner_operation_workers",
         "network_mode",
@@ -52,6 +53,7 @@ _NUMERIC_INT = frozenset(
         "min_idle",
         "repo_discovery_ttl",
         "github_poll_interval",
+        "stuck_timeout",
         "repo_check_workers",
         "runner_operation_workers",
     }

@@ -468,3 +468,36 @@ class TestCiContainerCleanupConfig:
         config.write_text("ci_container_max_age: -1\n")
         with pytest.raises(SystemExit):
             load_ci_container_max_age(str(config))
+
+
+class TestStuckTimeout:
+    def test_defaults_to_eight_minutes(self, pool: PoolConfig) -> None:
+        assert pool.stuck_timeout == 8
+
+    def test_read_from_yaml_defaults_and_overridden_per_pool(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "defaults:\n"
+            "  stuck_timeout: 10\n"
+            "pools:\n"
+            "  - name: inherits\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "  - name: overrides\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+            "    stuck_timeout: 15\n"
+        )
+        pools = {p.name: p for p in load_config(str(config))}
+
+        assert pools["inherits"].stuck_timeout == 10
+        assert pools["overrides"].stuck_timeout == 15
+
+    def test_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("STUCK_TIMEOUT", "11")
+        assert load_config("/nonexistent/config.yml")[0].stuck_timeout == 11
+
+    @pytest.mark.parametrize("value", [0, -1, 1441])
+    def test_out_of_range_is_rejected(self, pool: PoolConfig, value: int) -> None:
+        errors = validation_errors([replace(pool, stuck_timeout=value)])
+        assert any("stuck_timeout" in message for message in errors)
