@@ -1,0 +1,62 @@
+# Trivy exceptions for the published images (ghcr.io/mechemsi/rorch-*).
+#
+# Read by the image scans in ci.yml and release.yml. Unfixed advisories never
+# need an entry: the scans run with ignore-unfixed. An entry here is for a
+# finding that has a fix upstream which we cannot take yet. Every entry is
+# scoped to the paths it covers, says why, and expires one month out, so the
+# question is asked again instead of the exception living forever.
+
+vulnerabilities:
+  # docker-buildx: Docker's newest buildx (v0.37.2, and its main branch on
+  # 2026-10-04) still vendors moby/go-archive v0.2.0; the runner installs
+  # docker-buildx-plugin 0.37.1 from Docker's apt repo. No buildx build with the
+  # fix exists to install. Drop this when a buildx release bumps go-archive.
+  - id: CVE-2026-17106
+    paths:
+      - "usr/libexec/docker/cli-plugins/docker-buildx"
+    statement: "No buildx release vendors moby/go-archive >= 0.3.0 yet; runner image only."
+    expired_at: 2026-11-04
+
+  # npm 10.9.9 bundled with Node 22.23.3, the Node the runner stages for
+  # actions/setup-node. These dependencies are fixed only in npm 11, and npm
+  # 10.9.9 is the newest npm 10. Moving the shared CI toolchain to npm 11 is a
+  # major-version change for every consuming repo, so it is not done in a
+  # security patch. Drop these when Node 22 ships an npm 10 with the fixes, or
+  # when the runner image moves to npm 11 / Node 24.
+  - id: CVE-2026-102276
+    paths: &staged-npm
+      - "opt/toolcache-staging/node/*/x64/lib/node_modules/npm/**"
+    statement: "brace-expansion in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-102278
+    paths: *staged-npm
+    statement: "brace-expansion in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-13149
+    paths: *staged-npm
+    statement: "brace-expansion in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-14257
+    paths: *staged-npm
+    statement: "brace-expansion in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-69152
+    paths: *staged-npm
+    statement: "brace-expansion in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-69192
+    paths: *staged-npm
+    statement: "ip-address in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-9496
+    paths: *staged-npm
+    statement: "pacote in the staged Node's npm 10; fixed only in npm 11 (pacote 21)."
+    expired_at: 2026-11-04
+  - id: CVE-2026-33671
+    paths: *staged-npm
+    statement: "picomatch in the staged Node's npm 10; fixed only in npm 11."
+    expired_at: 2026-11-04
+  - id: CVE-2026-48815
+    paths: *staged-npm
+    statement: "sigstore in the staged Node's npm 10; fixed only in npm 11 (sigstore 4)."
+    expired_at: 2026-11-04

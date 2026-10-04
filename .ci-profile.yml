@@ -12,7 +12,10 @@ deploys: false              # No deploy pipeline. The operator pulls a release o
 registry_push: ghcr         # release.yml builds and pushes orchestrator, dashboard
                             # and runner images to ghcr.io/mechemsi/rorch-* with
                             # provenance, appends their digests to the release
-                            # notes, then scans the pushed digests (advisory). The
+                            # notes, then scans the pushed digests: fixable
+                            # CRITICAL fails the run, HIGH is advisory, exceptions
+                            # are expiring entries in .trivyignore.yaml. ci.yml
+                            # image-scan applies the same gate on PRs. The
                             # host never builds: its disk is slow.
                             # Trust boundary: write-token jobs run first-party or
                             # Docker-official actions only; the third-party scanner
