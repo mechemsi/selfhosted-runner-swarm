@@ -1,3 +1,9 @@
+## [1.1.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.1...v1.1.2) (2026-10-04)
+
+### Bug Fixes
+
+* **security:** clear fixable Trivy findings in the published images ([#28](https://github.com/mechemsi/selfhosted-runner-swarm/issues/28)) ([aaa7ac0](https://github.com/mechemsi/selfhosted-runner-swarm/commit/aaa7ac00617aa4ad7c736f9ac04ff3b586fb9126))
+
 ## [1.1.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.0...v1.1.1) (2026-10-04)
 
 ### Bug Fixes
