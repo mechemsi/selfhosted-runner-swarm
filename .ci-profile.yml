@@ -10,7 +10,17 @@ deploys: false              # No deploy pipeline. rorch is run by the operator w
                             # environment protection, no rollback trigger.
 
 consumed_as_dependency: false   # Nothing imports rorch as a library.
-                                # Consequence: no semantic-release, no version tags.
+
+releases: semantic-release      # Owner decision (2026-10): versioned releases so the
+                                # host deploys and rolls back by tag, not by "whatever
+                                # main is". release.yml runs on workflow_run after CI on
+                                # main; pr-title.yml keeps squash subjects parseable.
+                                # main is unprotected, so @semantic-release/git pushes
+                                # the chore(release) commit (CHANGELOG + manifest
+                                # versions). If branch protection with required checks
+                                # is ever added, that push is rejected: drop the git and
+                                # changelog plugins (ci-release-deploy skill) rather than
+                                # adding a bypass token.
 
 runners:
   default: github-hosted

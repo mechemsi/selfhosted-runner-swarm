@@ -13,7 +13,9 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+# Set by the release workflow; empty means "use package.json" (next.config.mjs).
+ARG RORCH_BUILD_VERSION=""
+RUN RORCH_BUILD_VERSION="${RORCH_BUILD_VERSION}" npm run build
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app

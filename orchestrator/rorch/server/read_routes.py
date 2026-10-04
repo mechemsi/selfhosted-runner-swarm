@@ -16,6 +16,7 @@ from rorch.resolver import (
 from rorch.server.auth import AUTH_COOKIE, require_auth
 from rorch.server.deps import _deps, _is_runner_container, _limit
 from rorch.server.payloads import _prometheus, _state_payload
+from rorch.version import get_version
 
 DASHBOARD_HTML = Path(__file__).parent.parent / "dashboard.html"
 
@@ -39,7 +40,7 @@ def dashboard() -> Response:
 
 @bp.get("/api/health")
 def health() -> Response:
-    return jsonify(status="ok", ts=time.time())
+    return jsonify(status="ok", version=get_version(), ts=time.time())
 
 
 @bp.get("/api/state")

@@ -1,0 +1,42 @@
+name: PR title
+
+# Squash merges use the PR title as the commit subject, and semantic-release
+# derives the next version from those subjects. A title it cannot parse is a
+# change that silently never ships in a release, so the title is checked here.
+#
+# `security` is not a type: write fix(security): ... instead.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]   # `edited` = title changes
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50  # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
+            style
+          requireScope: false
+          # The subject is free text; existing history starts with lowercase
+          # verbs but nothing depends on that.
+          subjectPattern: ^.+$

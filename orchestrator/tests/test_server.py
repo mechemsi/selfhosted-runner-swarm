@@ -18,6 +18,8 @@ from rorch.server import (
     Deps,
     TokenGuard,
     create_app,
+    payloads,
+    read_routes,
     resolve_token,
     start,
 )
@@ -92,6 +94,19 @@ class TestAuth:
         deps.token = "s3cret"
         client = create_app(deps).test_client()
         assert client.get("/api/health").status_code == 200
+
+    def test_health_reports_version(self, deps: Deps, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(read_routes, "get_version", lambda: "1.2.3")
+        body = create_app(deps).test_client().get("/api/health").get_json()
+        assert body["status"] == "ok"
+        assert body["version"] == "1.2.3"
+        assert isinstance(body["ts"], float)
+
+    def test_state_reports_version(self, deps: Deps, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(payloads, "get_version", lambda: "1.2.3")
+        deps.token = ""
+        body = create_app(deps).test_client().get("/api/state").get_json()
+        assert body["version"] == "1.2.3"
 
     def test_refuses_non_loopback_bind_without_token(self, deps: Deps) -> None:
         deps.token = ""

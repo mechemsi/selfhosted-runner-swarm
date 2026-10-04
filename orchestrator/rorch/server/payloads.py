@@ -12,6 +12,7 @@ from rorch.resolver import (
 )
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX
 from rorch.server.deps import Deps
+from rorch.version import get_version
 
 COUNTERS = ("containers", "online", "idle", "busy", "queued")
 
@@ -107,6 +108,7 @@ def _state_payload(deps: Deps) -> dict[str, Any]:
             if info.name != ORCHESTRATOR_CONTAINER
         ],
         "jobs": deps.store.recent_jobs(25),
+        "version": get_version(),
         "globals": {
             "max_total_runners": effective.max_total_runners,
             "max_runner_lifetime": effective.max_runner_lifetime,

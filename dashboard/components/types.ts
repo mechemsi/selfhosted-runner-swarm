@@ -82,6 +82,7 @@ export interface State {
     total_containers: number;
   };
   rate_limit: { remaining?: number | null; blocked_until?: number };
+  version?: string;
   ts: number;
 }
 
