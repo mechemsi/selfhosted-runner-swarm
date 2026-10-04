@@ -4,10 +4,22 @@
 
 platform: github            # GitHub Actions (not Gitea)
 
-deploys: false              # No deploy pipeline. rorch is run by the operator with
-                            # `make up` on the host that owns the Docker socket.
-                            # Consequence: no registry push, no provenance, no
-                            # environment protection, no rollback trigger.
+deploys: false              # No deploy pipeline. The operator pulls a release on
+                            # the host that owns the Docker socket (`make deploy`).
+                            # Consequence: no environment protection, no automated
+                            # rollback trigger; rollback = previous RORCH_VERSION.
+
+registry_push: ghcr         # release.yml builds and pushes orchestrator, dashboard
+                            # and runner images to ghcr.io/mechemsi/rorch-* with
+                            # provenance, appends their digests to the release
+                            # notes, then scans the pushed digests (advisory). The
+                            # host never builds: its disk is slow.
+                            # Trust boundary: write-token jobs run first-party or
+                            # Docker-official actions only; the third-party scanner
+                            # runs last, read-only, sharing no build cache. Build
+                            # cache is a GHCR registry cache only image-push can
+                            # write. Never use type=gha cache in release.yml: any
+                            # step of any job in the run can write it.
 
 consumed_as_dependency: false   # Nothing imports rorch as a library.
 
@@ -54,7 +66,6 @@ not_applicable:
   bundle_size: "No browser bundler — dashboard.html ships as-is."
   ai_evals: "No LLM SDK in dependencies."
   iac: "No terraform/, k8s/ or helm/."
-  registry_push: "See deploys: false."
 
 known_gaps:
   - "Actions are pinned to major tags (@v4), not commit SHAs. The ci-cd skill wants SHAs for repos that touch self-hosted runners. Pin them on the next CI pass — it needs network access to resolve each SHA."

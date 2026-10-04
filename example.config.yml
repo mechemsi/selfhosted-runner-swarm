@@ -42,11 +42,13 @@ ci_container_max_age: 360
 # database file reverts everything to exactly what is written here.
 
 defaults:
-  # gh-runner:latest is the newest agent built by scripts/build-runner.sh.
-  # Pin a pool to an older agent with runner_image: gh-runner:2.328.0 — see the
-  # "Runner agent versions" section in the README. Must be >= 2.327 for
-  # Node24-runtime actions.
-  runner_image:  gh-runner:latest
+  # The runner image published with each release. {version} is replaced with
+  # the orchestrator's own version, so deploying or rolling back the
+  # orchestrator moves the runners with it, and the host never builds it.
+  # For a local build (scripts/build-runner.sh) use gh-runner:latest, or pin an
+  # older agent with gh-runner:2.328.0; see "Runner agent versions" in the
+  # README. Must be >= 2.327 for Node24-runtime actions.
+  runner_image:  ghcr.io/mechemsi/rorch-runner:{version}
   runner_labels: self-hosted,linux,x64,docker
   # Runner network namespace:
   #   host   (default) — jobs reach host services on localhost, but a job's

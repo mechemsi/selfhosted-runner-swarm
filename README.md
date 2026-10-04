@@ -49,9 +49,10 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 git clone https://github.com/your-org/rorch.git
 cd rorch
 
-make setup      # scaffolds .env + config.yml, builds the runner image for this host
-# edit .env (GITHUB_PAT) and config.yml (your pools)
-make up         # start — prints the dashboard URL
+make setup      # scaffolds .env + config.yml
+# edit .env (GITHUB_PAT, RORCH_VERSION) and config.yml (your pools)
+make deploy     # pull the published images and start
+make dashboard  # prints the dashboard URL
 make logs       # follow the orchestrator
 ```
 
@@ -59,11 +60,12 @@ make logs       # follow the orchestrator
 
 | Target | Does |
 |--------|------|
-| `make setup` | First-time setup: scaffold config, generate a dashboard token, build the runner image |
+| `make setup` | First-time setup: scaffold config, generate a dashboard token |
+| `make deploy` | Pull the images for `RORCH_VERSION` and recreate (production) |
 | `make up` / `make down` / `make restart` | Compose lifecycle |
 | `make logs` / `make ps` | Follow logs · list orchestrator and runner containers |
-| `make rebuild` | Rebuild the runner image and recreate the orchestrator |
-| `make update RUNNER_VERSION=x.y.z` | Move to a different runner agent and recreate |
+| `make rebuild` | Dev: build the runner image locally and recreate the orchestrator |
+| `make update RUNNER_VERSION=x.y.z` | Dev: build a different runner agent locally and recreate |
 | `make dashboard` | Print the dashboard URL including the auth token |
 | `make check` | Everything CI runs: ruff, pyright, pytest |
 | `make build-images` | Validate both Dockerfiles build |
@@ -72,10 +74,9 @@ make logs       # follow the orchestrator
 <summary>Manual equivalent, without make</summary>
 
 ```bash
-./scripts/build-runner.sh
-cp .env.example .env               # add your GITHUB_PAT
+cp .env.example .env               # add your GITHUB_PAT, pin RORCH_VERSION
 cp example.config.yml config.yml   # define your pools
-docker compose up -d
+docker compose pull && docker compose up -d
 docker compose logs -f orchestrator
 ```
 </details>
@@ -107,29 +108,58 @@ The running version is visible in three places: the orchestrator's startup banne
 `version` field of `GET /api/health` (unauthenticated) and `/api/state`, and the dashboard
 header.
 
+### Published images
+
+Each release builds, scans and pushes three images to GHCR from the release tag, on
+GitHub-hosted runners. The host never builds anything:
+
+| Image | Used by |
+|---|---|
+| `ghcr.io/mechemsi/rorch-orchestrator` | `orchestrator` service |
+| `ghcr.io/mechemsi/rorch-dashboard` | `dashboard` service |
+| `ghcr.io/mechemsi/rorch-runner` | every runner container (`runner_image`) |
+
+Tags: `X.Y.Z`, `vX.Y.Z`, `X.Y`, `latest` and `sha-<commit>`. The release notes list each
+image's `@sha256:` digest, which is the reference to use when you want to pin bytes rather
+than a tag. Each image also carries a build provenance attestation
+(`gh attestation verify oci://ghcr.io/mechemsi/rorch-runner:X.Y.Z -R mechemsi/selfhosted-runner-swarm`).
+
+The runner image works on any host: its entrypoint starts as root, reads the GID of the
+mounted `/var/run/docker.sock`, adds the `runner` user to a group with that GID and
+re-executes itself as `runner` before registering. The default `runner_image`,
+`ghcr.io/mechemsi/rorch-runner:{version}`, follows the orchestrator's own version, so a
+deploy or rollback of the orchestrator moves the runners with it. The orchestrator pulls a
+missing registry image on first spawn; it only builds bare local names such as
+`gh-runner:latest` (see *Runner agent versions*).
+
 ### Deploy a release
 
-Deploy by tag, not by whatever `main` happens to be:
+Pin the version in `.env` and pull. Nothing is built on the host:
 
 ```bash
 cd /opt/gh-runner
-git fetch --tags
-git checkout vX.Y.Z
-docker compose up -d --build orchestrator dashboard
+git fetch --tags && git checkout vX.Y.Z    # compose file and docs for that release
+sed -i 's/^RORCH_VERSION=.*/RORCH_VERSION=vX.Y.Z/' .env
+docker compose pull orchestrator dashboard
+docker compose up -d
 docker compose exec orchestrator python3 -c "import json,urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health'))['version'])"
 ```
 
-The last command should print `X.Y.Z`.
+The last command should print `X.Y.Z`. `make deploy` runs the pull and `up` steps.
 
 ### Roll back
 
-Check out the previous tag and do the same:
+Set the previous version and do the same:
 
 ```bash
 git tag --sort=-v:refname | head -3      # find the previous release
 git checkout vX.Y.(Z-1)
-docker compose up -d --build orchestrator dashboard
+sed -i 's/^RORCH_VERSION=.*/RORCH_VERSION=vX.Y.(Z-1)/' .env
+docker compose pull orchestrator dashboard && docker compose up -d
 ```
+
+The previous images are still in the registry, so a rollback is a pull, not a rebuild.
+With the default `runner_image`, new runners use the previous runner image as well.
 
 Code rolls back; the database schema does not. The store only ever creates tables
 and indexes with `CREATE ... IF NOT EXISTS`, so an older orchestrator runs against a newer
@@ -348,15 +378,17 @@ ci_container_patterns:
 
 ### Runner agent versions
 
-The agent version is baked into the image at build time. Images are tagged by version, and
-`gh-runner:latest` follows the newest:
+The published `rorch-runner` image carries the agent version that release was built with
+(the `RUNNER_VERSION` default in `runner-image/Dockerfile`). For development, or to run a
+different agent, build locally; local images are tagged by version, and `gh-runner:latest`
+follows the newest:
 
 ```bash
 ./scripts/build-runner.sh                          # newest → gh-runner:2.337.0 + gh-runner:latest
 RUNNER_VERSION=2.328.0 ./scripts/build-runner.sh   # older  → gh-runner:2.328.0 only
 ```
 
-Pools default to `gh-runner:latest`. A pool needing an older agent pins it:
+Pools default to the published image. A pool needing an older agent pins a local build:
 
 ```yaml
 - name: legacy-ci
@@ -364,8 +396,10 @@ Pools default to `gh-runner:latest`. A pool needing an older agent pins it:
   runner_image: gh-runner:2.328.0   # this pool only
 ```
 
-If a pinned image is missing, the orchestrator's auto-build reads the version back out of the
-tag and passes it to the build, so a pinned pool never silently gets a different agent.
+If a bare-named image is missing, the orchestrator's auto-build (from the mounted
+`runner-image/` context) reads the version back out of the tag and passes it to the build,
+so a pinned pool never silently gets a different agent. Registry images are pulled and
+never built locally.
 
 > **The agent must be ≥ 2.327** for actions on the Node24 runtime (current `actions/*`,
 > `shivammathur/setup-php@v2`). Older agents fail with
@@ -473,9 +507,8 @@ rorch/
 
 **Docker socket errors:**
 - Ensure Docker socket is at `/var/run/docker.sock`
-- The runner image must be built with the host's docker group GID. `scripts/build-runner.sh` detects this automatically via `getent group docker`.
-- If you ran `docker build` directly, pass it explicitly: `docker build --build-arg DOCKER_GID=$(getent group docker | cut -d: -f3) -t gh-runner:latest ./runner-image`
-- Symptom of GID mismatch: runners exit immediately with `Cannot connect to Docker socket at /var/run/docker.sock` in the container logs.
+- Current runner images (label `rorch.docker_gid=runtime`) join the socket's group at start; the log shows `Docker socket GID <n>: runner joined group <name>`. If that line is missing, the image predates this and was built for one host's GID; switch to the published image or rebuild with `./scripts/build-runner.sh`.
+- Symptom of a GID problem: runners exit immediately with `Cannot connect to Docker socket at /var/run/docker.sock` in the container logs.
 
 ## Auto-start on server boot
 

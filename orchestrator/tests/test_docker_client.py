@@ -21,6 +21,7 @@ from rorch.docker_client import (
     _pinned_runner_version,
 )
 from rorch.store import EVENT_MANUAL_STOP, Store
+from rorch.version import expand_image
 
 
 class TestParseRunningMinutes:
@@ -77,33 +78,39 @@ class TestBoundedCleanup:
 
 class TestEnsureImage:
     HOST_GID = 991
-    EXPECTED_BUILD: ClassVar[list[str]] = [
-        "build",
-        "--build-arg",
-        f"DOCKER_GID={HOST_GID}",
-        "--label",
-        f"rorch.docker_gid={HOST_GID}",
-        "-t",
-        "gh-runner:latest",
-        RUNNER_BUILD_CONTEXT,
-    ]
+    EXPECTED_BUILD: ClassVar[list[str]] = ["build", "-t", "gh-runner:latest", RUNNER_BUILD_CONTEXT]
+    PUBLISHED = "ghcr.io/mechemsi/rorch-runner:1.1.0"
 
     def _client(
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        image_gid: int | None,
+        image_gid: int | str | None,
         has_context: bool,
         build_code: int = 0,
+        pulled_gid: int | str | None = None,
     ) -> tuple[DockerClient, list[list[str]]]:
-        """image_gid: None = image absent, else the GID it was built for."""
+        """image_gid: None = image absent, else its rorch.docker_gid label.
+
+        pulled_gid: the label the image has once a `docker pull` succeeded.
+        """
         builds: list[list[str]] = []
+        label = {"value": image_gid}
         client = DockerClient()
         monkeypatch.setattr(docker_client, "_host_docker_gid", lambda: self.HOST_GID)
         monkeypatch.setattr(
-            client, "_capture", lambda args: ("", 1) if image_gid is None else (str(image_gid), 0)
+            client,
+            "_capture",
+            lambda args: ("", 1) if label["value"] is None else (str(label["value"]), 0),
         )
-        monkeypatch.setattr(client, "_exec", lambda args: builds.append(args) or build_code)
+
+        def run(args: list[str]) -> int:
+            builds.append(args)
+            if args[0] == "pull" and build_code == 0:
+                label["value"] = pulled_gid
+            return build_code
+
+        monkeypatch.setattr(client, "_exec", run)
         monkeypatch.setattr(Path, "exists", lambda self: has_context)
         return client, builds
 
@@ -127,6 +134,42 @@ class TestEnsureImage:
         client, builds = self._client(monkeypatch, image_gid=None, has_context=False)
         assert client.ensure_image("gh-runner:latest") is False
         assert builds == []
+
+    def test_runtime_gid_image_is_used_as_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Published images join the socket's group at start, on any host.
+        client, builds = self._client(monkeypatch, image_gid="runtime", has_context=True)
+        assert client.ensure_image(self.PUBLISHED) is True
+        assert client.ensure_image("gh-runner:latest") is True
+        assert builds == []
+
+    def test_missing_registry_image_is_pulled_not_built(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, builds = self._client(
+            monkeypatch, image_gid=None, has_context=True, pulled_gid="runtime"
+        )
+        assert client.ensure_image(self.PUBLISHED) is True
+        assert builds == [["pull", self.PUBLISHED]]
+
+    def test_failed_pull_backs_off_and_never_builds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, builds = self._client(monkeypatch, image_gid=None, has_context=True, build_code=1)
+        assert client.ensure_image(self.PUBLISHED) is False
+        assert client.ensure_image(self.PUBLISHED) is False
+        assert builds == [["pull", self.PUBLISHED]]  # second call is inside the retry window
+
+    def test_pulled_image_with_a_foreign_gid_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, _ = self._client(monkeypatch, image_gid=None, has_context=True, pulled_gid=988)
+        assert client.ensure_image(self.PUBLISHED) is False
+
+    def test_version_placeholder_is_expanded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(docker_client, "expand_image", lambda i: expand_image(i, "1.1.0"))
+        client, builds = self._client(
+            monkeypatch, image_gid=None, has_context=True, pulled_gid="runtime"
+        )
+        assert client.ensure_image("ghcr.io/mechemsi/rorch-runner:{version}") is True
+        assert builds == [["pull", self.PUBLISHED]]
 
     def test_failed_build_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, builds = self._client(monkeypatch, image_gid=None, has_context=True, build_code=1)
@@ -324,7 +367,7 @@ class TestWorkTmpfs:
             f"{RUNNER_WORK_DIR}:rw,exec,size=3g,uid=1000,gid=1000"
         )
         # Options precede the image, or docker would pass them to the entrypoint.
-        assert args.index("--tmpfs") < args.index(pool.runner_image)
+        assert args.index("--tmpfs") < args.index(expand_image(pool.runner_image))
 
     def test_auto_size_follows_the_memory_limit(
         self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
@@ -440,7 +483,7 @@ class TestToolCache:
         assert "RUNNER_TOOL_CACHE=/opt/hostedtoolcache" in envs
         assert "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" in envs
         assert "/opt/hostedtoolcache:/opt/hostedtoolcache" in args
-        assert args.index("-e") < args.index(pool.runner_image)
+        assert args.index("-e") < args.index(expand_image(pool.runner_image))
 
 
 class TestCleanupStuck:

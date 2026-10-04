@@ -5,6 +5,31 @@
 
 set -e
 
+# ── Root phase: join the Docker socket's group, then drop to `runner` ────────
+# The image is published once and run on many hosts, each with its own docker
+# group GID. Read it from the mounted socket, give `runner` a group with that
+# GID, and re-exec this script as `runner` with the new group list. Every
+# runner container is fresh (ephemeral), so this edits only its own /etc/group.
+DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+if [[ "$(id -u)" == "0" ]]; then
+    if [[ -S "$DOCKER_SOCK" ]]; then
+        sock_gid=$(stat -c %g "$DOCKER_SOCK")
+        sock_group=$(getent group "$sock_gid" | cut -d: -f1)
+        if [[ -z "$sock_group" ]]; then
+            sock_group=docker-host
+            groupadd -g "$sock_gid" "$sock_group"
+        fi
+        if ! id -nG runner | tr ' ' '\n' | grep -qx "$sock_group"; then
+            usermod -aG "$sock_group" runner
+        fi
+        echo "==> Docker socket GID ${sock_gid}: runner joined group ${sock_group}"
+    else
+        echo "WARN: ${DOCKER_SOCK} is not a socket; starting without Docker access"
+    fi
+    exec setpriv --reuid=runner --regid=runner --init-groups \
+        env HOME=/home/runner USER=runner LOGNAME=runner "$0" "$@"
+fi
+
 # ── Validation ────────────────────────────────────────────────────────────────
 required_vars=("GITHUB_PAT" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
 for var in "${required_vars[@]}"; do

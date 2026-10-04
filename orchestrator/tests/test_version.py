@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from rorch import version
-from rorch.version import PYPROJECT, resolve_version
+from rorch.version import PYPROJECT, expand_image, resolve_version
 
 
 def _pyproject(tmp_path: Path, ver: str) -> Path:
@@ -52,3 +52,19 @@ def test_falls_back_to_metadata_then_unknown(
 def test_repo_pyproject_is_found() -> None:
     assert PYPROJECT.is_file()
     assert resolve_version({}) not in ("", "unknown")
+
+
+def test_expand_image_substitutes_the_version() -> None:
+    assert expand_image("ghcr.io/o/rorch-runner:{version}", "1.2.3") == (
+        "ghcr.io/o/rorch-runner:1.2.3"
+    )
+
+
+def test_expand_image_unreleased_falls_back_to_latest() -> None:
+    assert expand_image("ghcr.io/o/rorch-runner:{version}", "unknown") == (
+        "ghcr.io/o/rorch-runner:latest"
+    )
+
+
+def test_expand_image_leaves_plain_refs_alone() -> None:
+    assert expand_image("gh-runner:latest", "1.2.3") == "gh-runner:latest"

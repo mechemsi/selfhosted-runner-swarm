@@ -99,24 +99,17 @@ RUN /usr/local/bin/pip install --no-cache-dir ruff pyright \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/ruff" /usr/local/bin/ruff \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pyright" /usr/local/bin/pyright
 
-# Create runner user
-# DOCKER_GID must match the host's docker group GID so the runner user can
-# access the mounted /var/run/docker.sock. Override at build time:
-#   --build-arg DOCKER_GID=$(getent group docker | cut -d: -f3)
-# Default 988 matches modern Ubuntu/Debian Docker installs; older hosts differ.
-# If a base-image group already owns this GID, rename it to "docker" so the
-# runner user inherits socket access without GID collisions.
-ARG DOCKER_GID=988
-RUN if getent group "${DOCKER_GID}" >/dev/null; then \
-        existing="$(getent group "${DOCKER_GID}" | cut -d: -f1)"; \
-        if [ "${existing}" != "docker" ]; then groupmod -n docker "${existing}"; fi; \
-    else \
-        groupadd -g "${DOCKER_GID}" docker; \
-    fi \
-    && useradd -m -s /bin/bash runner \
+# Create runner user. uid/gid 1000: the orchestrator's tmpfs work dir is
+# mounted with uid=1000,gid=1000 (docker_client.RUNNER_UID).
+#
+# No docker group here. The socket's GID differs per host, so the entrypoint
+# reads it from /var/run/docker.sock at start (as root), adds `runner` to a group
+# with that GID and drops to `runner`. One published image works on every host;
+# rorch.docker_gid=runtime tells the orchestrator not to rebuild it per host.
+RUN useradd -m -s /bin/bash runner \
     && usermod -aG sudo runner \
-    && usermod -aG docker runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+LABEL rorch.docker_gid=runtime
 
 # Declared here, after the toolchain layers, on purpose: an ARG/ENV change
 # invalidates the cache of every instruction that follows it. Declared at the
@@ -154,7 +147,9 @@ COPY entrypoint.sh /entrypoint.sh
 # not depend on the checkout's permissions.
 RUN chmod 0755 /entrypoint.sh
 
-USER runner
+# Starts as root on purpose: the entrypoint joins the socket's group, then
+# re-executes itself as `runner` (setpriv, from util-linux in the base image).
+# The agent itself never runs as root; config.sh refuses to.
 WORKDIR /home/runner/actions-runner
 
 ENTRYPOINT ["/entrypoint.sh"]

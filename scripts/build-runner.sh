@@ -4,9 +4,10 @@
 # Licensed under the MIT License. See LICENSE file in the project root.
 
 #
-# Build the gh-runner image with DOCKER_GID matching the host's docker group.
-# Required so the runner user inside the container can access the mounted
-# /var/run/docker.sock. Override DOCKER_GID via env var if needed.
+# Build the runner image locally, for development or a custom agent version.
+# Production pulls the published image (ghcr.io/mechemsi/rorch-runner) instead.
+# No per-host docker GID any more: the entrypoint joins the socket's group at
+# start, so the same image works on every host.
 #
 # The image is tagged twice: gh-runner:<version> (pinnable per pool via
 # runner_image in config.yml) and gh-runner:latest, unless a version older than
@@ -26,20 +27,9 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly CONTEXT="${REPO_ROOT}/runner-image"
 readonly IMAGE_TAG="${IMAGE_TAG:-gh-runner:${RUNNER_VERSION}}"
 
-DOCKER_GID="${DOCKER_GID:-$(getent group docker | cut -d: -f3 || true)}"
-readonly DOCKER_GID
-
-if [[ -z "${DOCKER_GID}" ]]; then
-    echo "ERROR: could not determine host docker group GID" >&2
-    echo "       set DOCKER_GID env var, or ensure the 'docker' group exists" >&2
-    exit 1
-fi
-
-echo "==> Building ${IMAGE_TAG} (runner ${RUNNER_VERSION}, DOCKER_GID=${DOCKER_GID})"
+echo "==> Building ${IMAGE_TAG} (runner ${RUNNER_VERSION})"
 docker build \
-    --build-arg "DOCKER_GID=${DOCKER_GID}" \
     --build-arg "RUNNER_VERSION=${RUNNER_VERSION}" \
-    --label "rorch.docker_gid=${DOCKER_GID}" \
     -t "${IMAGE_TAG}" \
     "${CONTEXT}"
 

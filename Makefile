@@ -13,7 +13,7 @@ ORCHESTRATOR := $(CURDIR)/orchestrator
 RUNNER_VERSION ?= 2.337.0
 API_PORT     ?= 8080
 
-.PHONY: help setup up down restart logs ps rebuild update runner-image \
+.PHONY: help setup up down restart logs ps deploy rebuild update runner-image \
         dashboard token test lint fmt check build-images clean
 
 help: ## Show this help
@@ -22,7 +22,7 @@ help: ## Show this help
 
 # ── setup ──────────────────────────────────────────────────────────────────
 
-setup: .env config.yml runner-image ## First-time setup: scaffold .env + config.yml, build runner image
+setup: .env config.yml ## First-time setup: scaffold .env + config.yml
 	@echo
 	@echo "Setup complete. Edit .env (GITHUB_PAT) and config.yml (pools), then: make up"
 
@@ -40,7 +40,7 @@ config.yml: ## Scaffold config.yml from example.config.yml
 	  echo "==> Created config.yml (edit your pools)"; \
 	else echo "==> config.yml already exists, leaving it alone"; fi
 
-runner-image: ## Build the runner image for this host's docker GID
+runner-image: ## Build the runner image locally (dev; production pulls it from GHCR)
 	@RUNNER_VERSION=$(RUNNER_VERSION) ./scripts/build-runner.sh
 
 # ── lifecycle ──────────────────────────────────────────────────────────────
@@ -67,6 +67,10 @@ token: ## Print just the dashboard auth token
 	@grep -s '^RORCH_API_TOKEN=' .env | cut -d= -f2-
 
 # ── updates ────────────────────────────────────────────────────────────────
+
+deploy: ## Pull the published images for RORCH_VERSION (.env) and recreate
+	$(COMPOSE) pull orchestrator dashboard
+	$(COMPOSE) up -d
 
 rebuild: runner-image ## Rebuild the runner image and recreate the orchestrator
 	$(COMPOSE) up -d --build --force-recreate

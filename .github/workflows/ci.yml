@@ -276,7 +276,6 @@ jobs:
           context: ./runner-image
           push: false
           load: true
-          build-args: DOCKER_GID=988
           cache-from: type=gha,scope=runner
           cache-to: type=gha,mode=max,scope=runner
           tags: gh-runner:ci-${{ github.sha }}
@@ -303,7 +302,7 @@ jobs:
           mode=$(docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
             -c 'stat -c %a /entrypoint.sh')
           echo "entrypoint mode: $mode"
-          docker run --rm --entrypoint sh gh-runner:ci-${{ github.sha }} \
+          docker run --rm --user runner --entrypoint sh gh-runner:ci-${{ github.sha }} \
             -c 'test -r /entrypoint.sh && test -x /entrypoint.sh' || {
             echo "::error::/entrypoint.sh is $mode — the runner user needs read+execute"
             exit 1

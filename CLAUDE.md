@@ -106,10 +106,10 @@ desired = min(max_runners, max(min_idle, busy + queued))
 ## Important constraints
 
 - `config.yml` and `.env` are gitignored — they contain secrets
-- Runner image must be built before starting the orchestrator
 - Docker socket must be mounted for the orchestrator to manage containers
 - GitHub PAT needs Actions (read/write) + Administration (read/write) permissions
-- Runner image must be built with `--build-arg DOCKER_GID=$(stat -c %g /var/run/docker.sock)`, else the runner can't read the socket and exits before registering (the orchestrator's auto-build does this and stamps the GID as a `rorch.docker_gid` label)
+- The runner image is host-independent: `runner-image/entrypoint.sh` starts as root, joins a group with the GID of `/var/run/docker.sock`, then re-execs as `runner` (label `rorch.docker_gid=runtime`). Images built before that carry one host's GID in the label and are rebuilt/pulled on mismatch
+- Releases: semantic-release on main (`release.yml`) tags vX.Y.Z and publishes `ghcr.io/mechemsi/rorch-{orchestrator,dashboard,runner}`; the host pulls (`make deploy`), never builds. PR titles must be Conventional Commits (squash subject drives the version)
 
 ## Before committing changes to runner-image/
 
