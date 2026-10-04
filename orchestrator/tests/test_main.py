@@ -3,11 +3,14 @@
 
 """Characterization tests for the daemon loop in rorch.__main__.
 
-main() runs forever, so each test lets exactly one tick happen: time.sleep raises _StopLoopError.
+main() runs until its stop event is set, so each test hands it one whose first wait sets it:
+exactly one tick happens.
 Everything with I/O (GitHub, Docker, the store, the dashboard server) is a MagicMock;
 config, pools and the resolved EffectiveConfig are the real types.
 """
 
+import signal
+import threading
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -21,8 +24,17 @@ from rorch.scaler import GLOBAL_CONTAINER_PREFIX
 from rorch.store import PoolState
 
 
-class _StopLoopError(Exception):
-    """Raised by the patched sleep to end main() after one tick."""
+class _OneTickStop(threading.Event):
+    """Records the loop's sleep and stops main() after the first tick."""
+
+    def __init__(self, sleeps: list[float]) -> None:
+        super().__init__()
+        self._sleeps = sleeps
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self._sleeps.append(timeout or 0.0)
+        self.set()
+        return True
 
 
 class Wired:
@@ -65,15 +77,9 @@ class Wired:
         monkeypatch.setattr(daemon.server, "start", self.server_start)
         monkeypatch.setattr(daemon.server, "resolve_token", lambda _store: "token")
         monkeypatch.setattr(daemon.server, "resolve_readonly_token", lambda: "readonly")
-        monkeypatch.setattr(daemon.time, "sleep", self._sleep)
-
-    def _sleep(self, seconds: float) -> None:
-        self.sleeps.append(seconds)
-        raise _StopLoopError
 
     def run_one_tick(self) -> None:
-        with pytest.raises(_StopLoopError):
-            daemon.main()
+        daemon.main(stop=_OneTickStop(self.sleeps))
 
 
 @pytest.fixture
@@ -262,3 +268,22 @@ def test_tick_workers_default_to_one_per_pool(
     runtime = daemon._build_runtime()
 
     assert runtime.pool_tick_workers == 11
+
+
+def test_stopping_shuts_the_dashboard_server_down(wired: Wired) -> None:
+    wired.run_one_tick()
+
+    wired.server_start.return_value.stop.assert_called_once_with()
+
+
+def test_sigterm_and_sigint_request_a_clean_stop() -> None:
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        for sig in previous:
+            stop = threading.Event()
+            daemon._stop_on_signals(stop)
+            signal.raise_signal(sig)
+            assert stop.is_set(), sig
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)

@@ -5,8 +5,10 @@
 
 import logging
 import os
-import time
+import signal
+import threading
 from dataclasses import dataclass
+from types import FrameType
 
 from rorch import server
 from rorch.config import (
@@ -61,10 +63,14 @@ class Runtime:
     scaler: PoolScaler
 
 
-def main() -> None:
+def main(stop: threading.Event | None = None) -> None:
+    """Run until `stop` is set; by default that is SIGTERM (docker stop) or SIGINT."""
+    if stop is None:
+        stop = threading.Event()
+        _stop_on_signals(stop)
     runtime = _build_runtime()
     _log_banner(runtime)
-    _start_dashboard(runtime)
+    api = _start_dashboard(runtime)
 
     # Build ahead of demand: doing it on the first spawn stalls a queued job.
     for image in {p.runner_image for p in runtime.pools}:
@@ -77,15 +83,45 @@ def main() -> None:
     maintenance = TickLanes(2, name="maintenance")
     tick_count = 0
     try:
-        while True:
+        while not stop.is_set():
             _tick(runtime, pool_lanes, maintenance)
             tick_count += 1
             if tick_count % runtime.prune_every == 0:
                 maintenance.submit(HOUSEKEEPING_LANE, lambda: _housekeeping(runtime))
-            time.sleep(runtime.poll)
+            stop.wait(runtime.poll)
     finally:
-        pool_lanes.shutdown()
-        maintenance.shutdown()
+        _shut_down(api, pool_lanes, maintenance)
+
+
+def _stop_on_signals(stop: threading.Event) -> None:
+    """Turn SIGTERM and SIGINT into a clean stop.
+
+    The orchestrator is PID 1 in its container, and the kernel drops signals a
+    PID 1 has no handler for. Without this, `docker stop` sat out its whole
+    timeout and then SIGKILLed the process mid-tick.
+    """
+
+    def request_stop(signum: int, _frame: FrameType | None) -> None:
+        if not stop.is_set():
+            log.info("Received %s, shutting down", signal.Signals(signum).name)
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+
+
+def _shut_down(api: server.ApiServer | None, pool_lanes: TickLanes, maintenance: TickLanes) -> None:
+    """Stop serving, then wait for ticks already started.
+
+    The loop submits nothing once stopped, so this is at most one round of
+    work. A tick talking to GitHub or Docker cannot be interrupted; Docker's
+    stop timeout is the backstop for one that hangs.
+    """
+    if api is not None:
+        api.stop()
+    pool_lanes.shutdown()
+    maintenance.shutdown()
+    log.info("Orchestrator stopped")
 
 
 def _build_runtime() -> Runtime:
@@ -184,10 +220,10 @@ def _pool_scope(pool: PoolConfig) -> str:
     return "org-level" if pool.is_org_level else "repo-level"
 
 
-def _start_dashboard(runtime: Runtime) -> None:
+def _start_dashboard(runtime: Runtime) -> server.ApiServer | None:
     if runtime.store is None:
-        return
-    server.start(
+        return None
+    return server.start(
         server.Deps(
             store=runtime.store,
             resolver=runtime.resolver,

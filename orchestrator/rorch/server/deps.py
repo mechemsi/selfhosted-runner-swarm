@@ -64,6 +64,32 @@ class TokenGuard:
             self._failures.pop(client, None)
 
 
+class InFlightKeys:
+    """Idempotency keys whose first request is still being handled.
+
+    The replay cache is only written once a request finishes, so without this a
+    retry arriving while the first attempt is still running (a client timing
+    out on a slow `docker run`) would miss the cache and provision a second
+    runner. Requests are served concurrently, so that window is real.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._keys: set[str] = set()
+
+    def claim(self, key: str) -> bool:
+        """Whether the caller now owns `key`; False if another request holds it."""
+        with self._lock:
+            if key in self._keys:
+                return False
+            self._keys.add(key)
+            return True
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            self._keys.discard(key)
+
+
 class Deps:
     """Everything the HTTP layer is allowed to touch."""
 
@@ -85,6 +111,12 @@ class Deps:
         # be handed out without also handing over container control.
         self.readonly_token = readonly_token
         self.guard = TokenGuard()
+        self.in_flight = InFlightKeys()
+        # Serialises config edits that read the overlay, merge, and write it
+        # back. Requests run on several threads, so two concurrent edits to one
+        # pool would otherwise each start from the same row and one change
+        # would silently disappear. Held only for store calls, never Docker.
+        self.config_lock = threading.Lock()
 
 
 def _deps() -> Deps:

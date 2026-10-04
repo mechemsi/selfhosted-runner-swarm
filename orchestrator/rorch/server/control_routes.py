@@ -16,7 +16,7 @@ from rorch.resolver import (
     coerce_pool_fields,
     unknown_fields,
 )
-from rorch.server.auth import idempotent, require_write
+from rorch.server.auth import idempotent, require_write, serialized
 from rorch.server.deps import Deps, _actor, _deps, _is_runner_container, _json_body, _pool_by_name
 
 bp = Blueprint("control", __name__)
@@ -54,6 +54,7 @@ def protect_container(name: str) -> Any:
 
 @bp.post("/api/pools/<name>/state")
 @require_write
+@serialized
 def set_pool_state(name: str) -> Any:
     deps = _deps()
     if _pool_by_name(deps.resolver, name) is None:
@@ -105,6 +106,7 @@ def global_pause() -> Any:
 
 @bp.patch("/api/config/pools/<name>")
 @require_write
+@serialized
 def patch_pool(name: str) -> Any:
     deps = _deps()
     body = _json_body()
@@ -134,6 +136,7 @@ def patch_pool(name: str) -> Any:
 
 @bp.delete("/api/config/pools/<name>/overrides")
 @require_write
+@serialized
 def reset_pool(name: str) -> Any:
     """Drop the override row so the pool reverts to its config.yml definition."""
     deps = _deps()
@@ -146,6 +149,7 @@ def reset_pool(name: str) -> Any:
 
 @bp.post("/api/config/pools")
 @require_write
+@serialized
 def create_pool() -> Any:
     deps = _deps()
     body = _json_body()
@@ -171,6 +175,7 @@ def create_pool() -> Any:
 
 @bp.delete("/api/config/pools/<name>")
 @require_write
+@serialized
 def remove_pool(name: str) -> Any:
     deps = _deps()
     overrides = deps.store.pool_overrides()
@@ -190,6 +195,7 @@ def remove_pool(name: str) -> Any:
 
 @bp.patch("/api/config/globals")
 @require_write
+@serialized
 def patch_globals() -> Any:
     deps = _deps()
     body = _json_body()
