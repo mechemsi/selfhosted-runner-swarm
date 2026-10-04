@@ -250,3 +250,15 @@ def test_concurrency_settings_are_clamped(wired: Wired, monkeypatch: pytest.Monk
 
     assert runtime.pool_tick_workers == 1
     assert runtime.github_concurrency == daemon.DEFAULT_MAX_CONCURRENT_REQUESTS
+
+
+def test_tick_workers_default_to_one_per_pool(
+    wired: Wired, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("POOL_TICK_WORKERS", raising=False)
+    pools = [replace(wired.pools[0], name=f"p{i}") for i in range(11)]
+    monkeypatch.setattr(daemon, "load_config", lambda: pools)
+
+    runtime = daemon._build_runtime()
+
+    assert runtime.pool_tick_workers == 11

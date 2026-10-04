@@ -113,7 +113,10 @@ def _build_runtime() -> Runtime:
         retention_days=retention_days,
         rate_limit_reserve=rate_limit_reserve,
         github_concurrency=github_concurrency,
-        pool_tick_workers=_bounded_env("POOL_TICK_WORKERS", DEFAULT_POOL_TICK_WORKERS, 1, 64),
+        # Default: a worker per configured pool (at least 8), so no pool waits for another.
+        pool_tick_workers=_bounded_env(
+            "POOL_TICK_WORKERS", max(DEFAULT_POOL_TICK_WORKERS, len(pools)), 1, 64
+        ),
         max_total_runners=max_total_runners,
         max_runner_lifetime=max_runner_lifetime,
         ci_container_max_age=load_ci_container_max_age(),
