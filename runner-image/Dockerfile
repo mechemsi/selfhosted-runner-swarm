@@ -7,11 +7,16 @@ LABEL rorch.keep=true
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Toolchain versions to pre-stage for actions/setup-* (avoids download on every run)
-ARG NODE_VERSION=22.16.0
+# Node 22.23+ bundles npm 10.9.9, whose tar 7.5.22 clears the CRITICAL/HIGH tar
+# advisories that npm 10.9.4 and older (tar 6.x) carry.
+ARG NODE_VERSION=22.23.3
 ARG PYTHON_VERSION=3.11.12
 
-# Install dependencies + Docker CLI only (no daemon — uses host socket)
-RUN apt-get update && apt-get install -y \
+# Install dependencies + Docker CLI only (no daemon: uses the host socket).
+# `upgrade` first: the ubuntu:22.04 tag lags the security pocket (libssl3, ...),
+# and every release rebuilds from a fresh base, so this keeps each release on
+# the current patched 22.04 packages without changing the Ubuntu release.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     curl \
     jq \
     git \
@@ -95,7 +100,13 @@ RUN ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" /us
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" /usr/local/bin/pip
 
 # ── Install common CI tools globally ────────────────────────────────────────
-RUN /usr/local/bin/pip install --no-cache-dir ruff pyright \
+# setuptools first: Python 3.11's ensurepip installs setuptools 65.5.0, which
+# carries three HIGH advisories (CVE-2022-40897, CVE-2024-6345, CVE-2025-47273).
+# 80.10.2 fixes those and vendors patched wheel/jaraco.context; it is the last
+# 80.x, kept on that line because 82 drops pkg_resources, which CI jobs may
+# still import.
+RUN /usr/local/bin/pip install --no-cache-dir "setuptools==80.10.2" \
+    && /usr/local/bin/pip install --no-cache-dir ruff pyright \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/ruff" /usr/local/bin/ruff \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pyright" /usr/local/bin/pyright
 
@@ -129,12 +140,19 @@ ENV RUNNER_VERSION=${RUNNER_VERSION}
 # version a tag actually contains.
 LABEL rorch.runner_version=${RUNNER_VERSION}
 
-# Download GitHub Actions runner
+# Download GitHub Actions runner.
+# The agent's bundled Node runtimes (externals/node20, externals/node24) only
+# execute JavaScript actions; the agent never calls their npm/npx. That npm
+# copy was the source of most of the image's CRITICAL/HIGH findings (tar,
+# brace-expansion, minimatch, ...) and it is not on a job's PATH, so it is
+# removed. Jobs use the npm of the Node staged above, which is kept current.
 WORKDIR /home/runner/actions-runner
 RUN curl -o runner.tar.gz -L \
     "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
     && tar xzf runner.tar.gz \
     && rm runner.tar.gz \
+    && rm -rf externals/node*/lib/node_modules/npm \
+              externals/node*/bin/npm externals/node*/bin/npx \
     && ./bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 

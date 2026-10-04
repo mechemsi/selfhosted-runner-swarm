@@ -35,6 +35,7 @@ jobs:
               - 'runner-image/**'
               - 'orchestrator/requirements.txt'
               - 'orchestrator/pyproject.toml'
+              - '.trivyignore.yaml'
             dashboard:
               - 'dashboard/**'
             ci:
@@ -308,16 +309,83 @@ jobs:
             exit 1
           }
 
-      # Advisory: the base image is Ubuntu 22.04 with a full CI toolchain, so a
-      # clean report is unrealistic. Promote to blocking on CRITICAL-only once
-      # the current findings are triaged.
-      - name: Scan orchestrator image
-        uses: aquasecurity/trivy-action@v0.36.0
+      # Same policy as ci.yml image-scan and the release scan: HIGH is
+      # reported, a fixable CRITICAL fails the build. The orchestrator image is
+      # scanned by image-scan on every PR that touches it.
+      - name: Scan runner image (HIGH, advisory)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         continue-on-error: true
         with:
-          image-ref: gh-runner-orchestrator:ci-${{ github.sha }}
+          image-ref: gh-runner:ci-${{ github.sha }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '0'
+          cache: 'false'
+
+      - name: Scan runner image (CRITICAL, blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: gh-runner:ci-${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '1'
+          cache: 'false'
+          skip-setup-trivy: true
+
+  # Builds the two fast images (no push, no cache) and scans them, so a
+  # vulnerable base or dependency shows up on the PR instead of after a release
+  # has already published it. The runner image takes ~16 minutes to build, so
+  # it is scanned in the opt-in docker-build-scan job above instead.
+  # Blocking on CRITICAL with a fix available; HIGH is advisory. Exceptions
+  # live in .trivyignore.yaml, each with a statement and an expired_at.
+  image-scan:
+    name: image-scan (${{ matrix.image }})
+    needs: changes
+    if: needs.changes.outputs.docker == 'true' || needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [orchestrator, dashboard]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: ./${{ matrix.image }}
+          push: false
+          load: true
+          pull: true
+          tags: rorch-${{ matrix.image }}:ci-${{ github.sha }}
+
+      - name: Scan (HIGH, advisory)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: rorch-${{ matrix.image }}:ci-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '0'
+          cache: 'false'
+
+      - name: Scan (CRITICAL, blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: rorch-${{ matrix.image }}:ci-${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '1'
+          cache: 'false'
+          skip-setup-trivy: true
 
   # The store speaks two dialects and the differences (reserved words, upsert
   # syntax, TEXT keys) all pass every SQLite test and then fail on the first

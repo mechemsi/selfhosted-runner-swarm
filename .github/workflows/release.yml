@@ -234,9 +234,14 @@ jobs:
 
   # Untrusted job: third-party scanner, read-only permissions, no build, no
   # cache, nothing downstream depends on it. Scans the exact pushed digest.
-  # Advisory, as in ci.yml: the runner image is Ubuntu with a full CI
-  # toolchain, so a clean report is unrealistic. Promote to blocking on
-  # CRITICAL once the findings are triaged.
+  # It runs after the push on purpose (see the trust boundary above), so a red
+  # scan cannot stop this release's images from existing: it marks the run
+  # failed so the regression is seen and fixed before anyone deploys the tag.
+  # The PR gate that stops a regression from merging is ci.yml image-scan.
+  #
+  # Blocking: CRITICAL with a fix available. Advisory: HIGH. Unfixed findings
+  # are dropped by ignore-unfixed; any fixable one we cannot take yet goes in
+  # .trivyignore.yaml with a statement and an expired_at, never a blanket rule.
   image-scan:
     name: image-scan (${{ matrix.image }})
     needs: [release, image-push]
@@ -251,6 +256,12 @@ jobs:
       matrix:
         image: [orchestrator, dashboard, runner]
     steps:
+      # Only for .trivyignore.yaml, read from the released tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: v${{ needs.release.outputs.version }}
+          persist-credentials: false
+
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ghcr.io
@@ -265,10 +276,27 @@ jobs:
           digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)
           echo "image=${REF%:*}@$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Scan
+      # The full HIGH+CRITICAL report, for reading. Never fails the job.
+      # cache: false on both steps: no GitHub Actions cache anywhere in this
+      # workflow, including the scanner's vulnerability DB.
+      - name: Scan (HIGH, advisory)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         continue-on-error: true
         with:
           image-ref: ${{ steps.ref.outputs.image }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '0'
+          cache: 'false'
+
+      - name: Scan (CRITICAL, blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.image }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: '1'
+          cache: 'false'
+          skip-setup-trivy: true
