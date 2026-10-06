@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.2...v1.2.0) (2026-10-06)
+
+### Features
+
+* **pools:** label-aware scaling and a per-pool job-started hook ([#29](https://github.com/mechemsi/selfhosted-runner-swarm/issues/29)) ([8986699](https://github.com/mechemsi/selfhosted-runner-swarm/commit/8986699b5d3c8625f18ca18ba9fcadb9f0dd6c6f))
+
 ## [1.1.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.1...v1.1.2) (2026-10-04)
 
 ### Bug Fixes
