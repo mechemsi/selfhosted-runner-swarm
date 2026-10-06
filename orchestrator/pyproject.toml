@@ -1,6 +1,6 @@
 [project]
 name = "rorch"
-version = "1.2.0"
+version = "1.2.1"
 description = "GitHub Actions Runner Orchestrator"
 requires-python = ">=3.12"
 dependencies = [

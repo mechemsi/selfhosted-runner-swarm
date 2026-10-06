@@ -1,3 +1,9 @@
+## [1.2.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.0...v1.2.1) (2026-10-06)
+
+### Bug Fixes
+
+* **scaler:** count only the pool's own runners as busy or idle ([#30](https://github.com/mechemsi/selfhosted-runner-swarm/issues/30)) ([e0a7d42](https://github.com/mechemsi/selfhosted-runner-swarm/commit/e0a7d4292b90068057759b11b4fe58123549a4e8))
+
 ## [1.2.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.1.2...v1.2.0) (2026-10-06)
 
 ### Features
