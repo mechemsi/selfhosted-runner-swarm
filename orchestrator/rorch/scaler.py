@@ -302,16 +302,18 @@ class PoolScaler:
         if runners is None:
             raise RuntimeError(f"failed to list runners for {pool.display}")
         runner_list = runners
-        online = [runner for runner in runner_list if runner.status == "online"]
+        # Only this pool's runners: another pool on the same repository (or a
+        # hand-registered runner) must not count as our busy or idle capacity,
+        # or a deploy pool keeps a runner up whenever CI runners are busy.
+        own = [runner for runner in runner_list if runner.name.startswith(f"{prefix}-")]
+        online = [runner for runner in own if runner.status == "online"]
         online_names = {runner.name for runner in online}
         idle = sum(1 for runner in online if not runner.busy)
         busy = sum(1 for runner in online if runner.busy)
         offline_runners = tuple(
             runner
-            for runner in runner_list
-            if runner.status == "offline"
-            and runner.name.startswith(prefix)
-            and runner.name not in running_names
+            for runner in own
+            if runner.status == "offline" and runner.name not in running_names
         )
 
         self._record_runner_status(pool, runner_list, prefix)

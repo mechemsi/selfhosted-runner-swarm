@@ -19,13 +19,16 @@ from rorch.scaler import PoolScaler
 from rorch.store import EVENT_DEREGISTER, PoolState, Store
 
 
-def _online_runners(idle: int = 0, busy: int = 0) -> list[RunnerInfo]:
+def _online_runners(
+    idle: int = 0, busy: int = 0, prefix: str = "gh-runner-test-pool"
+) -> list[RunnerInfo]:
+    """Runners named like the `pool` fixture's, so the scaler counts them as its own."""
     runners = [
-        RunnerInfo(id=index, name=f"idle-{index}", status="online", busy=False)
+        RunnerInfo(id=index, name=f"{prefix}-idle-{index}", status="online", busy=False)
         for index in range(idle)
     ]
     runners.extend(
-        RunnerInfo(id=idle + index, name=f"busy-{index}", status="online", busy=True)
+        RunnerInfo(id=idle + index, name=f"{prefix}-busy-{index}", status="online", busy=True)
         for index in range(busy)
     )
     return runners
@@ -83,6 +86,20 @@ class TestScalingDecision:
 
         # desired = min(5, max(1, 1+3)) = 4, running = 1 → spawn 3
         assert mock_docker.spawn_runner.call_count == 3
+
+    def test_another_pools_busy_runners_are_not_ours(
+        self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        """A deploy pool on a repo whose CI runners are busy, with nothing queued for it."""
+        deploy = replace(pool, name="deploy-test", min_idle=0, max_runners=1)
+        mock_github.list_runners.return_value = _online_runners(busy=3) + _online_runners(
+            idle=1, prefix="gh-runner-test-pool-extra"
+        )
+        mock_docker.running_containers.return_value = []
+
+        scaler.tick(deploy)
+
+        mock_docker.spawn_runner.assert_not_called()
 
     def test_max_runners_caps_spawning(
         self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
