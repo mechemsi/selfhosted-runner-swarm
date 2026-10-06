@@ -501,3 +501,68 @@ class TestStuckTimeout:
     def test_out_of_range_is_rejected(self, pool: PoolConfig, value: int) -> None:
         errors = validation_errors([replace(pool, stuck_timeout=value)])
         assert any("stuck_timeout" in message for message in errors)
+
+
+class TestRunnerLabels:
+    """A pool scales only for jobs its runners can take."""
+
+    def _pool(self, labels: str) -> PoolConfig:
+        return PoolConfig(name="p", pat="ghp_x", owner="acme", repo="r", runner_labels=labels)
+
+    def test_includes_the_labels_config_sh_always_adds(self) -> None:
+        pool = self._pool("self-hosted,linux,petopolis-deploy")
+        assert pool.label_set == {"self-hosted", "linux", "x64", "petopolis-deploy"}
+
+    def test_job_labels_must_be_a_subset_case_insensitively(self) -> None:
+        ci = self._pool("self-hosted,linux,x64,docker")
+        deploy = self._pool("self-hosted,linux,petopolis-deploy")
+        deploy_job = ["self-hosted", "Linux", "petopolis-deploy"]
+
+        assert deploy.serves_labels(deploy_job)
+        assert not ci.serves_labels(deploy_job)
+        assert ci.serves_labels(["self-hosted", "linux", "docker"])
+        assert not deploy.serves_labels(["self-hosted", "linux", "docker"])
+        assert not ci.serves_labels(["ubuntu-latest"])
+
+    def test_a_job_without_labels_still_counts(self) -> None:
+        """Unknown labels keep the old behaviour rather than starving the queue."""
+        assert self._pool("self-hosted").serves_labels([])
+
+
+class TestJobStartedHook:
+    def test_loaded_from_yaml(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.yml"
+        config.write_text(
+            "pools:\n"
+            "  - name: deploy\n"
+            "    owner: acme\n"
+            "    repo: r\n"
+            "    pat: ghp_x\n"
+            "    job_started_hook: /opt/hooks/deploy.sh\n"
+            "  - name: plain\n"
+            "    owner: acme\n"
+            "    pat: ghp_x\n"
+        )
+        pools = {p.name: p for p in load_config(str(config))}
+
+        assert pools["deploy"].job_started_hook == "/opt/hooks/deploy.sh"
+        assert pools["plain"].job_started_hook == ""
+
+    def test_relative_path_is_rejected(self) -> None:
+        pool = PoolConfig(name="p", pat="ghp_x", owner="acme", job_started_hook="hook.sh")
+        assert any("job_started_hook" in e for e in validation_errors([pool]))
+
+
+class TestOverlappingPrefixes:
+    def test_a_pool_whose_prefix_covers_another_is_warned_about(self) -> None:
+        ci = PoolConfig(name="petopolis", pat="ghp_x", owner="acme", repo="petopolis")
+        deploy = replace(ci, name="petopolis-deploy")
+
+        warnings = validation_warnings([ci, deploy])
+
+        assert len(warnings) == 1
+        assert "'petopolis'" in warnings[0] and "'petopolis-deploy'" in warnings[0]
+
+    def test_distinct_prefixes_are_fine(self) -> None:
+        ci = PoolConfig(name="petopolis", pat="ghp_x", owner="acme", repo="petopolis")
+        assert validation_warnings([ci, replace(ci, name="deploy-petopolis")]) == []

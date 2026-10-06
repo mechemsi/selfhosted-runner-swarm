@@ -464,6 +464,31 @@ Three ways out, cheapest first:
   network_mode: bridge      # default is "host"
 ```
 
+### Gated pools: labels plus a job-started hook
+
+A pool scales only for queued jobs whose `runs-on` labels are a subset of its runners' labels
+(`runner_labels` plus the `self-hosted`, `linux` and `x64` that `config.sh` always adds), so two
+pools on one repository never start runners for each other's jobs.
+
+A label is no boundary by itself: anyone who can edit a workflow can ask for it. For a pool
+that holds secrets (a deploy runner), set `job_started_hook` to a script on the host. rorch
+mounts it read-only into each runner and sets `ACTIONS_RUNNER_HOOK_JOB_STARTED`, so the runner
+runs it before the job's first step and a non-zero exit fails the job. Keep the script outside
+any directory a job can write. It is `config.yml` only, not a dashboard tunable.
+
+```yaml
+- name: deploy-myapp          # its container prefix must not start with another pool's
+  owner: acme
+  repo: myapp
+  runner_labels: self-hosted,linux,myapp-deploy
+  max_runners: 1
+  min_idle: 0
+  job_started_hook: /opt/rorch-hooks/myapp-deploy.sh
+```
+
+Jobs on the ordinary pool must then ask for a label the gated runner lacks (e.g. `docker`):
+`[self-hosted, linux]` alone also matches the gated runner, whose hook would fail the job.
+
 ## Scaling logic
 
 ```
