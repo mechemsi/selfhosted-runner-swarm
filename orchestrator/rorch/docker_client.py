@@ -68,6 +68,7 @@ RUNNER_GID = 1000
 # Node/Python. The agent only uses it if told to: with neither variable set it
 # falls back to _work/_tool and setup-* actions download per job. The agent
 # checks RUNNER_TOOL_CACHE first; some setup-* actions read AGENT_TOOLSDIRECTORY.
+JOB_STARTED_HOOK_PATH = "/opt/rorch/job-started-hook.sh"
 TOOL_CACHE_DIR = "/opt/hostedtoolcache"
 TOOL_CACHE_ENV = ("RUNNER_TOOL_CACHE", "AGENT_TOOLSDIRECTORY")
 
@@ -689,6 +690,18 @@ class DockerClient:
         )
         for var in TOOL_CACHE_ENV:
             args.extend(["-e", f"{var}={TOOL_CACHE_DIR}"])
+
+        # --mount, unlike -v, refuses a missing source instead of creating an
+        # empty directory there, so a typo fails the spawn rather than every job.
+        if pool.job_started_hook:
+            args.extend(
+                [
+                    "--mount",
+                    f"type=bind,src={pool.job_started_hook},dst={JOB_STARTED_HOOK_PATH},readonly",
+                    "-e",
+                    f"ACTIONS_RUNNER_HOOK_JOB_STARTED={JOB_STARTED_HOOK_PATH}",
+                ]
+            )
 
         if pool.cpu_limit > 0:
             args.extend(["--cpus", str(pool.cpu_limit)])

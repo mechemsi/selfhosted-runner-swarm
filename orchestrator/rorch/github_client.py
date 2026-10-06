@@ -382,11 +382,11 @@ class GitHubClient:
 
     def _scan_queue(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> QueueScan:
         if pool.repo:
-            return self._scan_repo(pool.pat, pool.owner, pool.repo, jobs)
+            return self._scan_repo(pool, pool.repo, jobs)
         repositories = self._pool_repositories(pool)
         if repositories is None:
             return QueueScan(failed=1)
-        scans = (self._scan_repo(pool.pat, pool.owner, repo, jobs) for repo in repositories)
+        scans = (self._scan_repo(pool, repo, jobs) for repo in repositories)
         return sum(scans, QueueScan())
 
     def _pool_repositories(self, pool: PoolConfig) -> list[str] | None:
@@ -397,7 +397,7 @@ class GitHubClient:
             return None
         return [repo["name"] for repo in repos]
 
-    def _scan_repo(self, pat: str, owner: str, repo: str, jobs: list[JobInfo] | None) -> QueueScan:
+    def _scan_repo(self, pool: PoolConfig, repo: str, jobs: list[JobInfo] | None) -> QueueScan:
         """Count jobs waiting for a runner in a single repo.
 
         When `jobs` is supplied, every non-queued job seen along the way is
@@ -408,27 +408,32 @@ class GitHubClient:
         scan = QueueScan()
         for status in ("queued", "in_progress"):
             runs_data = self._get(
-                pat, f"/repos/{owner}/{repo}/actions/runs?status={status}&per_page=50"
+                pool.pat, f"/repos/{pool.owner}/{repo}/actions/runs?status={status}&per_page=50"
             )
             if runs_data is None:
                 scan += QueueScan(failed=1)
                 continue
             for run in runs_data.get("workflow_runs", []):
-                scan += self._scan_run(pat, owner, repo, run, jobs)
+                scan += self._scan_run(pool, repo, run, jobs)
         return scan
 
     def _scan_run(
-        self, pat: str, owner: str, repo: str, run: dict[str, Any], jobs: list[JobInfo] | None
+        self, pool: PoolConfig, repo: str, run: dict[str, Any], jobs: list[JobInfo] | None
     ) -> QueueScan:
         jobs_data = self._get(
-            pat, f"/repos/{owner}/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=50"
+            pool.pat,
+            f"/repos/{pool.owner}/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=50",
         )
         if jobs_data is None:
             return QueueScan(failed=1)
         queued = 0
         for job in jobs_data.get("jobs", []):
             if job.get("status") == "queued":
-                queued += 1
+                # Only jobs this pool's runners can take: a job for another
+                # pool's labels (or a GitHub-hosted one) must not start runners
+                # here that sit idle, or worse, take a job meant for elsewhere.
+                if pool.serves_labels(job.get("labels") or []):
+                    queued += 1
             elif jobs is not None:
                 jobs.append(_job_info(job, run, repo))
         return QueueScan(queued=queued)

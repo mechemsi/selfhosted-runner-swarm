@@ -7,6 +7,7 @@ import io
 import threading
 import time
 import urllib.error
+from dataclasses import replace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -313,6 +314,25 @@ class TestQueuedCount:
 
         assert client.get_queued_count(pool, jobs) == 1
         assert [job.job_id for job in jobs] == [11]
+
+    def test_counts_only_queued_jobs_the_pool_can_run(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=queued": _RUNS,
+                "status=in_progress": {"workflow_runs": []},
+                "runs/1/jobs": {
+                    "jobs": [
+                        {"id": 1, "status": "queued", "labels": ["self-hosted", "linux"]},
+                        {"id": 2, "status": "queued", "labels": ["self-hosted", "deploy"]},
+                        {"id": 3, "status": "queued", "labels": ["ubuntu-latest"]},
+                    ]
+                },
+            }
+        )
+
+        assert client.get_queued_count(pool) == 1
+        deploy_pool = replace(pool, runner_labels="self-hosted,linux,deploy")
+        assert client.get_queued_count(deploy_pool) == 2
 
     def test_clean_scan_logs_no_warning(
         self, pool: PoolConfig, caplog: pytest.LogCaptureFixture

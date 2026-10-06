@@ -72,6 +72,22 @@ class PoolConfig:
     # never provision for, e.g. "legacy-*,scratch". Applied after the public
     # filter, so both can be used together.
     exclude_repos: str = ""
+    # Host path of a script the runner runs before each job's first step
+    # (ACTIONS_RUNNER_HOOK_JOB_STARTED); a non-zero exit fails the job. Mounted
+    # read-only, so keep it outside any directory a job can write. config.yml
+    # only: it is not a dashboard tunable.
+    job_started_hook: str = ""
+
+    @property
+    def label_set(self) -> frozenset[str]:
+        """Labels the runner registers with: the configured ones plus the
+        defaults config.sh always adds. GitHub compares labels case-insensitively."""
+        configured = {label.strip().lower() for label in self.runner_labels.split(",")}
+        return frozenset((configured | {"self-hosted", "linux", "x64"}) - {""})
+
+    def serves_labels(self, labels: list[str]) -> bool:
+        """Whether a job asking for `labels` can run on this pool's runners."""
+        return {label.lower() for label in labels} <= self.label_set
 
     @property
     def excluded_repo_patterns(self) -> tuple[str, ...]:
@@ -309,6 +325,7 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                     p.get("include_public_repos", defaults.get("include_public_repos", False))
                 ),
                 exclude_repos=_as_csv(p.get("exclude_repos", defaults.get("exclude_repos", ""))),
+                job_started_hook=str(p.get("job_started_hook", "")).strip(),
             )
         )
     return pools
@@ -378,6 +395,8 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
                 f"Pool '{p.name}': work_tmpfs_size must be 'auto', a size like '4g' or "
                 f"'512m', or '0' to disable (got: '{p.work_tmpfs_size}')"
             )
+        if p.job_started_hook and not p.job_started_hook.startswith("/"):
+            errors.append(f"Pool '{p.name}': job_started_hook must be an absolute host path")
     return errors
 
 
@@ -397,6 +416,13 @@ def validation_warnings(pools: list[PoolConfig]) -> list[str]:
                 f"GitHub API calls for {p.display}, and share one row of dashboard state."
             )
         seen.add(p.name)
+        for other in pools:
+            if other.name != p.name and other.container_prefix.startswith(f"{p.container_prefix}-"):
+                warnings.append(
+                    f"Pool '{p.name}' matches containers by the prefix '{p.container_prefix}-', "
+                    f"which also matches pool '{other.name}'. It would count and reap that "
+                    f"pool's runners as its own; rename one of them."
+                )
         tmpfs = parse_size(p.effective_work_tmpfs_size) if p.work_tmpfs_enabled else None
         memory = parse_size(p.memory_limit)
         if tmpfs and memory and tmpfs >= memory:

@@ -124,6 +124,21 @@ pools:
     runner_image:  gh-runner:latest   # custom image with php, composer etc
 
 
+  # ── Example 2b: Gated deploy runner for one repo ─────────────────────────
+  # Scales only for jobs asking for its labels; the hook (a host path, mounted
+  # read-only) runs before each job and fails any job it refuses. Name it so
+  # its container prefix does not start with another pool's (not "smart-deploy").
+  #
+  # - name:  deploy-smart
+  #   owner: smart
+  #   repo:  smart
+  #   pat:   "${GITHUB_PAT}"
+  #   max_runners:   1
+  #   min_idle:      0
+  #   runner_labels: self-hosted,linux,smart-deploy
+  #   job_started_hook: /opt/rorch-hooks/smart-deploy.sh
+
+
   # ── Example 3: Different GitHub account / org ─────────────────────────────
   # Use a separate PAT for a different account.
   # Uncomment and adjust:

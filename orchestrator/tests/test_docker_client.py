@@ -14,6 +14,7 @@ import pytest
 from rorch import docker_client
 from rorch.config import PoolConfig
 from rorch.docker_client import (
+    JOB_STARTED_HOOK_PATH,
     RUNNER_BUILD_CONTEXT,
     RUNNER_WORK_DIR,
     DockerClient,
@@ -279,6 +280,34 @@ class TestStopContainer:
         events = store.recent_events()
         assert events[0]["event"] == EVENT_MANUAL_STOP
         assert events[0]["pool"] == "tt"
+
+
+class TestJobStartedHook:
+    def _spawn_args(self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig) -> list[str]:
+        recorded: list[list[str]] = []
+        client = DockerClient()
+        monkeypatch.setattr(client, "ensure_image", lambda image: True)
+        monkeypatch.setattr(client, "_exec", lambda args: recorded.append(args) or 0)
+        client.spawn_runner(pool)
+        return recorded[0]
+
+    def test_hook_is_mounted_read_only_and_announced_to_the_runner(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        args = self._spawn_args(monkeypatch, replace(pool, job_started_hook="/opt/hooks/d.sh"))
+
+        mount = args[args.index("--mount") + 1]
+        assert mount == f"type=bind,src=/opt/hooks/d.sh,dst={JOB_STARTED_HOOK_PATH},readonly"
+        assert f"ACTIONS_RUNNER_HOOK_JOB_STARTED={JOB_STARTED_HOOK_PATH}" in args
+        assert args.index("--mount") < len(args) - 1  # before the image argument
+
+    def test_no_hook_means_no_mount_and_no_env(
+        self, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        args = self._spawn_args(monkeypatch, pool)
+
+        assert "--mount" not in args
+        assert not any(a.startswith("ACTIONS_RUNNER_HOOK_JOB_STARTED") for a in args)
 
 
 class TestNetworkMode:
