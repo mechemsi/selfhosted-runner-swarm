@@ -306,6 +306,7 @@ class TestQueuedCount:
         client = _scan_client(
             {
                 "status=queued": _RUNS,
+                "status=pending": {"workflow_runs": []},
                 "status=in_progress": {"workflow_runs": []},
                 "runs/1/jobs": _JOBS,
             }
@@ -319,6 +320,7 @@ class TestQueuedCount:
         client = _scan_client(
             {
                 "status=queued": _RUNS,
+                "status=pending": {"workflow_runs": []},
                 "status=in_progress": {"workflow_runs": []},
                 "runs/1/jobs": {
                     "jobs": [
@@ -334,6 +336,43 @@ class TestQueuedCount:
         deploy_pool = replace(pool, runner_labels="self-hosted,linux,deploy")
         assert client.get_queued_count(deploy_pool) == 2
 
+    def test_pending_run_with_queued_job_counts_for_its_pool(self, pool: PoolConfig) -> None:
+        """A run can sit "pending" while its jobs are already queued for a runner."""
+        client = _scan_client(
+            {
+                "status=queued": {"workflow_runs": []},
+                "status=pending": {"workflow_runs": [{"id": 7, "name": "Deploy"}]},
+                "status=in_progress": {"workflow_runs": []},
+                "runs/7/jobs": {
+                    "jobs": [
+                        {
+                            "id": 70,
+                            "status": "queued",
+                            "labels": ["self-hosted", "linux", "petopolis-deploy"],
+                        },
+                    ]
+                },
+            }
+        )
+        deploy_pool = replace(pool, runner_labels="self-hosted,linux,petopolis-deploy")
+
+        assert client.get_queued_count(deploy_pool) == 1
+        assert client.get_queued_count(pool) == 0
+
+    def test_run_listed_under_two_statuses_is_counted_once(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=queued": _RUNS,
+                "status=pending": _RUNS,
+                "status=in_progress": _RUNS,
+                "runs/1/jobs": _JOBS,
+            }
+        )
+        jobs: list[JobInfo] = []
+
+        assert client.get_queued_count(pool, jobs) == 1
+        assert [job.job_id for job in jobs] == [11]
+
     def test_clean_scan_logs_no_warning(
         self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -346,7 +385,12 @@ class TestQueuedCount:
         self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
     ) -> None:
         client = _scan_client(
-            {"status=queued": _RUNS, "status=in_progress": None, "runs/1/jobs": _JOBS}
+            {
+                "status=queued": _RUNS,
+                "status=pending": {},
+                "status=in_progress": None,
+                "runs/1/jobs": _JOBS,
+            }
         )
 
         assert client.get_queued_count(pool) == 1
@@ -357,7 +401,12 @@ class TestQueuedCount:
         self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
     ) -> None:
         client = _scan_client(
-            {"status=queued": _RUNS, "status=in_progress": {}, "runs/1/jobs": None}
+            {
+                "status=queued": _RUNS,
+                "status=pending": {},
+                "status=in_progress": {},
+                "runs/1/jobs": None,
+            }
         )
 
         assert client.get_queued_count(pool) == 0
