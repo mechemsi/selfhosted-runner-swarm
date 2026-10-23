@@ -26,6 +26,10 @@ SECONDARY_RATE_LIMIT_BASE_SECONDS = 60
 SECONDARY_RATE_LIMIT_MAX_SECONDS = 900
 MUTATION_DELAY_SECONDS = 1.0
 DEFAULT_MAX_CONCURRENT_REQUESTS = 8
+# Run statuses whose jobs can be waiting for a runner. A run stays "pending" (for example
+# behind a concurrency group or while GitHub has not started it yet) while its jobs are
+# already "queued" for a self-hosted label; leaving it out stranded those jobs forever.
+_ACTIVE_RUN_STATUSES = ("queued", "pending", "in_progress")
 
 
 @dataclass(frozen=True)
@@ -406,7 +410,8 @@ class GitHubClient:
         recording the rest costs no extra API requests.
         """
         scan = QueueScan()
-        for status in ("queued", "in_progress"):
+        seen: set[int] = set()
+        for status in _ACTIVE_RUN_STATUSES:
             runs_data = self._get(
                 pool.pat, f"/repos/{pool.owner}/{repo}/actions/runs?status={status}&per_page=50"
             )
@@ -414,6 +419,10 @@ class GitHubClient:
                 scan += QueueScan(failed=1)
                 continue
             for run in runs_data.get("workflow_runs", []):
+                # A run can change status between two listings; count its jobs once.
+                if run["id"] in seen:
+                    continue
+                seen.add(run["id"])
                 scan += self._scan_run(pool, repo, run, jobs)
         return scan
 
