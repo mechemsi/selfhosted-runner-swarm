@@ -1,3 +1,9 @@
+## [1.2.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.1...v1.2.2) (2026-10-23)
+
+### Bug Fixes
+
+* **github:** count queued jobs in pending workflow runs ([#32](https://github.com/mechemsi/selfhosted-runner-swarm/issues/32)) ([97c9de7](https://github.com/mechemsi/selfhosted-runner-swarm/commit/97c9de75a5d74505ce99f27267db087229a96fda))
+
 ## [1.2.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.0...v1.2.1) (2026-10-06)
 
 ### Bug Fixes
