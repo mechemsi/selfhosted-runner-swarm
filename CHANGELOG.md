@@ -1,3 +1,9 @@
+## [1.2.3](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.2...v1.2.3) (2026-10-23)
+
+### Bug Fixes
+
+* **dashboard:** upgrade next to 16.4.1 for two critical advisories ([#33](https://github.com/mechemsi/selfhosted-runner-swarm/issues/33)) ([881e868](https://github.com/mechemsi/selfhosted-runner-swarm/commit/881e868cf301d52421b45d55d7061c309c174887))
+
 ## [1.2.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.1...v1.2.2) (2026-10-23)
 
 ### Bug Fixes
