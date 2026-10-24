@@ -338,6 +338,12 @@ deregistration) stay strictly serial, at least one second apart, as GitHub recom
 check costs three requests when nothing is running (runners, queued runs, in-progress runs) plus
 one jobs request per active run.
 
+Pools that serve the same repository (a CI pool, a heavy lane, a deploy lane) share its scan:
+a run or jobs response fetched less than 10 seconds ago is reused and concurrent requests for
+it are merged, while each pool still counts only the queued jobs its labels can run. A lane
+pool for a repository therefore adds its runners request and nothing more, which leaves room
+to lower `github_poll_interval` for repositories whose jobs should start sooner.
+
 Every response updates the token's remaining/reset budget. RORCH stops when
 `GITHUB_RATE_LIMIT_RESERVE` requests remain, resumes after `X-RateLimit-Reset`, and honors
 `Retry-After` for secondary limits. During a cooldown, scaling is skipped rather than interpreting

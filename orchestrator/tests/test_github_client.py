@@ -429,6 +429,72 @@ class TestQueuedCount:
         assert "lower bound" in caplog.text
 
 
+class TestSharedScan:
+    """Pools on one repository share a scan instead of each sending the same requests."""
+
+    @staticmethod
+    def _client(now: list[float], responses: list[object]) -> tuple[GitHubClient, list[str]]:
+        client = GitHubClient(monotonic=lambda: now[0])
+        calls: list[str] = []
+
+        def fake_get(pat: str, path: str) -> object:
+            calls.append(path)
+            return responses[0] if "jobs" not in path else _JOBS
+
+        client._get = fake_get  # type: ignore[method-assign]
+        return client, calls
+
+    def test_second_pool_on_same_repo_reuses_the_scan(self, pool: PoolConfig) -> None:
+        now = [100.0]
+        client, calls = self._client(now, [_RUNS])
+        deploy_pool = replace(pool, name="deploy", runner_labels="self-hosted,linux,deploy")
+
+        assert client.get_queued_count(pool) == 1
+        first = len(calls)
+        now[0] += 5
+        assert client.get_queued_count(deploy_pool) == 1
+        assert len(calls) == first
+
+    def test_scan_older_than_the_window_is_fetched_again(self, pool: PoolConfig) -> None:
+        now = [100.0]
+        client, calls = self._client(now, [_RUNS])
+
+        client.get_queued_count(pool)
+        first = len(calls)
+        now[0] += 11
+        client.get_queued_count(pool)
+        assert len(calls) == 2 * first
+
+    def test_failed_request_is_not_shared(self, pool: PoolConfig) -> None:
+        now = [100.0]
+        client, calls = self._client(now, [None])
+
+        client.get_queued_count(pool)
+        client.get_queued_count(pool)
+        assert calls.count(calls[0]) == 2
+
+    def test_concurrent_pools_send_one_request(self, pool: PoolConfig) -> None:
+        client = GitHubClient()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def slow_get(pat: str, path: str) -> object:
+            calls.append(path)
+            release.wait(2)
+            return {"workflow_runs": []}
+
+        client._get = slow_get  # type: ignore[method-assign]
+        threads = [threading.Thread(target=client.get_queued_count, args=(pool,)) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        time.sleep(0.2)
+        release.set()
+        for thread in threads:
+            thread.join(5)
+
+        assert len(calls) == len(set(calls)) == 3  # one per run status, not per pool
+
+
 class TestRequestConcurrency:
     """Requests overlap up to a bound; they used to share one lock across the HTTP call."""
 
