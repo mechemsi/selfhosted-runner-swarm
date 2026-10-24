@@ -30,6 +30,11 @@ DEFAULT_MAX_CONCURRENT_REQUESTS = 8
 # behind a concurrency group or while GitHub has not started it yet) while its jobs are
 # already "queued" for a self-hosted label; leaving it out stranded those jobs forever.
 _ACTIVE_RUN_STATUSES = ("queued", "pending", "in_progress")
+# Pools on one repository (CI, heavy, deploy, main lanes) tick together and used to scan it
+# once each. A scan response younger than this is reused, so the repo costs one scan per tick
+# however many pools serve it; each pool still applies its own label filter.
+SHARED_SCAN_SECONDS = 10.0
+MAX_SHARED_SCAN_ENTRIES = 512
 
 
 @dataclass(frozen=True)
@@ -82,9 +87,11 @@ class GitHubClient:
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._rate_limit_reserve = rate_limit_reserve
         self._wall_clock = wall_clock
+        self._monotonic = monotonic
         self._sleep = sleep
         # Bounds requests in flight across every pool and thread. It used to be
         # one lock held across the whole HTTP round trip, which serialised every
@@ -99,6 +106,8 @@ class GitHubClient:
         self._blocked_until: dict[bytes, float] = {}
         self._secondary_failures: dict[bytes, int] = {}
         self._conditional_cache: OrderedDict[tuple[bytes, str], ConditionalResponse] = OrderedDict()
+        self._shared_scans: dict[tuple[bytes, str], tuple[float, Any]] = {}
+        self._shared_scan_locks: dict[tuple[bytes, str], threading.Lock] = {}
         self._last_mutation_at = 0.0
         self._last_remaining: int | None = None
         self._last_reset_at: float | None = None
@@ -295,6 +304,37 @@ class GitHubClient:
     def _get(self, pat: str, path: str) -> Any | None:
         return self._request(pat, path, "GET")
 
+    def _get_shared(self, pat: str, path: str) -> Any | None:
+        """GET a scan response, reusing one fetched under SHARED_SCAN_SECONDS ago.
+
+        One lock per path makes it single-flight: a second pool asking while the first is
+        fetching waits for that answer instead of sending the same request. Failures are
+        not kept, so the next pool retries.
+        """
+        key = (hashlib.sha256(pat.encode()).digest(), path)
+        with self._state_lock:
+            lock = self._shared_scan_locks.setdefault(key, threading.Lock())
+        with lock:
+            now = self._monotonic()
+            with self._state_lock:
+                hit = self._shared_scans.get(key)
+            if hit is not None and now - hit[0] < SHARED_SCAN_SECONDS:
+                return hit[1]
+            data = self._get(pat, path)
+            if data is not None:
+                with self._state_lock:
+                    self._shared_scans[key] = (now, data)
+                    if len(self._shared_scans) > MAX_SHARED_SCAN_ENTRIES:
+                        self._drop_stale_scans(now)
+            return data
+
+    def _drop_stale_scans(self, now: float) -> None:
+        """Forget expired scans (run ids keep changing, so the keys would pile up)."""
+        stale = [k for k, (at, _) in self._shared_scans.items() if now - at >= SHARED_SCAN_SECONDS]
+        for key in stale:
+            del self._shared_scans[key]
+            self._shared_scan_locks.pop(key, None)
+
     def _delete(self, pat: str, path: str) -> bool | None:
         return self._request(pat, path, "DELETE")
 
@@ -412,7 +452,7 @@ class GitHubClient:
         scan = QueueScan()
         seen: set[int] = set()
         for status in _ACTIVE_RUN_STATUSES:
-            runs_data = self._get(
+            runs_data = self._get_shared(
                 pool.pat, f"/repos/{pool.owner}/{repo}/actions/runs?status={status}&per_page=50"
             )
             if runs_data is None:
@@ -429,7 +469,7 @@ class GitHubClient:
     def _scan_run(
         self, pool: PoolConfig, repo: str, run: dict[str, Any], jobs: list[JobInfo] | None
     ) -> QueueScan:
-        jobs_data = self._get(
+        jobs_data = self._get_shared(
             pool.pat,
             f"/repos/{pool.owner}/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=50",
         )
