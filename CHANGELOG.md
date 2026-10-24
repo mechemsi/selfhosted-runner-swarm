@@ -1,3 +1,9 @@
+## [1.2.4](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.3...v1.2.4) (2026-10-24)
+
+### Performance Improvements
+
+* **github:** share one queue scan between pools on the same repository ([#34](https://github.com/mechemsi/selfhosted-runner-swarm/issues/34)) ([3d11401](https://github.com/mechemsi/selfhosted-runner-swarm/commit/3d1140155fbfa480bb4f253e4fdbd82c3a9cb7ca))
+
 ## [1.2.3](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.2...v1.2.3) (2026-10-23)
 
 ### Bug Fixes
