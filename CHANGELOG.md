@@ -1,3 +1,9 @@
+## [1.2.5](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.4...v1.2.5) (2026-11-01)
+
+### Bug Fixes
+
+* **deps:** bump flask to 3.1.3, pymysql to 1.2.3, pyyaml to 6.0.3 ([#36](https://github.com/mechemsi/selfhosted-runner-swarm/issues/36)) ([45e8bd8](https://github.com/mechemsi/selfhosted-runner-swarm/commit/45e8bd885c444a8d9d6c896c3b44fd48a7f2eecd))
+
 ## [1.2.4](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.3...v1.2.4) (2026-10-24)
 
 ### Performance Improvements
