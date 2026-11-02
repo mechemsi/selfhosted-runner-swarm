@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.5...v1.3.0) (2026-11-02)
+
+### Features
+
+* **pools:** add a gitea provider for Gitea Actions runners ([#38](https://github.com/mechemsi/selfhosted-runner-swarm/issues/38)) ([8de1a6e](https://github.com/mechemsi/selfhosted-runner-swarm/commit/8de1a6e105fd7d18167cbbd01d5c5ed2e306a8f1))
+
 ## [1.2.5](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.4...v1.2.5) (2026-11-01)
 
 ### Bug Fixes
