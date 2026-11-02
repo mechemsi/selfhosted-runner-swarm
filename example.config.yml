@@ -99,6 +99,18 @@ defaults:
 
 pools:
 
+  # ── Gitea: same scaling, with gitea-runner instead of the GitHub agent ──────
+  # Jobs run directly in the runner container (host mode). The token needs
+  # repository and user read/write. List every label: none are added for you.
+  # - name:  gitea-personal
+  #   provider: gitea
+  #   base_url: http://gitea.lan:3000
+  #   owner: my-gitea-username
+  #   scope: personal
+  #   pat:   "${GITEA_PAT}"             # required, never falls back to GITHUB_PAT
+  #   runner_labels: self-hosted,linux,x64,docker
+  #   max_runners: 2
+
   # ── Example 1: Org-level pool (recommended) ───────────────────────────────
   # One pool that serves ALL repos under "smart".
   # Runners register at org level — any repo's workflow can pick them up.

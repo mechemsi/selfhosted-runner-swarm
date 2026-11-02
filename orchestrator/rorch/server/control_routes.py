@@ -9,7 +9,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify
 
-from rorch.config import PoolConfig, validation_errors
+from rorch.config import PoolConfig, default_pat_env, validation_errors
 from rorch.resolver import (
     GLOBAL_KEYS,
     TUNABLE_FIELDS,
@@ -227,7 +227,7 @@ def _candidate_pool(deps: Deps, name: str, data: dict[str, Any], origin: str) ->
     from dataclasses import replace
 
     if origin == "ui":
-        pat = os.environ.get(str(data.get("pat_env", "GITHUB_PAT")), "")
+        pat = os.environ.get(str(data.get("pat_env", default_pat_env(data))), "")
         if not pat:
             return None
         fields = coerce_pool_fields({k: v for k, v in data.items() if k != "pat_env"})

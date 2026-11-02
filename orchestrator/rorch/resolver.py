@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass, replace
 from typing import Any
 
-from rorch.config import PoolConfig, validation_errors
+from rorch.config import PoolConfig, default_pat_env, validation_errors
 from rorch.store import PoolState, Store
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ TUNABLE_FIELDS = frozenset(
 )
 
 # Identity fields a UI-created pool must carry in addition to the tunables.
-IDENTITY_FIELDS = frozenset({"name", "owner", "repo", "scope"})
+IDENTITY_FIELDS = frozenset({"name", "owner", "repo", "scope", "provider", "base_url"})
 
 GLOBAL_KEYS = frozenset({"max_total_runners", "max_runner_lifetime", "paused"})
 
@@ -179,7 +179,7 @@ class ConfigResolver:
     @staticmethod
     def _build_ui_pool(name: str, data: dict[str, Any]) -> PoolConfig | None:
         """Materialise an API-created pool. Its PAT comes from the environment."""
-        pat_env = str(data.get("pat_env", "GITHUB_PAT"))
+        pat_env = str(data.get("pat_env", default_pat_env(data)))
         pat = os.environ.get(pat_env, "")
         if not pat:
             log.error("Pool '%s': %s is not set in the environment — skipping", name, pat_env)

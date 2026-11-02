@@ -63,7 +63,7 @@ def _job_info(job: dict[str, Any], run: dict[str, Any], repo: str) -> JobInfo:
         repo=repo,
         # `name` is the run's display name; workflow_name is the file's name and
         # is the more stable label when a run sets a custom run-name.
-        workflow=str(run.get("workflow_name") or run.get("name") or ""),
+        workflow=str(run.get("workflow_name") or run.get("name") or run.get("display_title") or ""),
         job_name=str(job.get("name", "")),
         runner=str(job.get("runner_name") or ""),
         status=str(job.get("status", "")),
@@ -80,6 +80,7 @@ class GitHubClient:
     API_BASE = "https://api.github.com"
     API_VERSION = "2022-11-28"
     TIMEOUT = 10
+    REPO_PAGE_SIZE = 100
 
     def __init__(
         self,
@@ -348,7 +349,7 @@ class GitHubClient:
         while True:
             data = self._get(
                 pool.pat,
-                f"/user/repos?affiliation=owner&visibility=all&per_page=100&page={page}",
+                f"/user/repos?affiliation=owner&visibility=all&per_page={self.REPO_PAGE_SIZE}&page={page}",
             )
             if not isinstance(data, list):
                 return None
@@ -371,7 +372,7 @@ class GitHubClient:
                     continue
                 repositories.add(name)
 
-            if len(data) < 100:
+            if len(data) < self.REPO_PAGE_SIZE:
                 break
             page += 1
 

@@ -86,8 +86,8 @@ RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 GITHUB_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}"
 API_BASE="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}"
 
-echo "==> Starting GitHub runner: ${RUNNER_NAME}"
-echo "    Repo:   ${GITHUB_BASE}"
+echo "==> Starting ${RORCH_PROVIDER:-github} runner: ${RUNNER_NAME}"
+echo "    Repo:   ${GITEA_URL:-https://github.com}/${GITHUB_OWNER}/${GITHUB_REPO}"
 echo "    Labels: ${RUNNER_LABELS}"
 
 # ── Verify Docker socket is accessible ───────────────────────────────────────
@@ -98,6 +98,41 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 echo "    Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null)"
+
+# ── Gitea: gitea-runner instead of the GitHub agent ──────────────────────────
+if [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
+    echo "==> Fetching Gitea registration token..."
+    GITEA_RUNNER_REGISTRATION_TOKEN=$(curl -s -X POST \
+        -H "Authorization: token ${GITHUB_PAT}" \
+        "${GITEA_URL%/}/api/v1/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/runners/registration-token" \
+        | jq -r .token)
+    if [[ -z "$GITEA_RUNNER_REGISTRATION_TOKEN" || "$GITEA_RUNNER_REGISTRATION_TOKEN" == "null" ]]; then
+        echo "ERROR: Failed to get a Gitea registration token. Check the pool's pat and repo access."
+        exit 1
+    fi
+    export GITEA_RUNNER_REGISTRATION_TOKEN
+    # Jobs run in this environment: the account token must not reach them.
+    unset GITHUB_PAT
+
+    # :host = jobs run directly in this container, with its tools and caches, as on GitHub.
+    GITEA_LABELS=$(echo "$RUNNER_LABELS" | tr -d ' ' | sed -E 's/([^,]+)/\1:host/g')
+    cat > gitea-runner.yaml <<EOF
+log:
+  level: info
+runner:
+  file: .runner
+  capacity: 1
+cache:
+  enabled: false
+host:
+  workdir_parent: ${PWD}/_work
+EOF
+    gitea-runner register --no-interactive --config gitea-runner.yaml \
+        --instance "${GITEA_URL%/}" --name "${RUNNER_NAME}" --labels "$GITEA_LABELS" --ephemeral
+    unset GITEA_RUNNER_REGISTRATION_TOKEN
+    echo "==> Runner registered, waiting for job..."
+    exec gitea-runner daemon --config gitea-runner.yaml
+fi
 
 # ── Get registration token from GitHub ───────────────────────────────────────
 echo "==> Fetching registration token..."

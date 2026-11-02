@@ -300,17 +300,24 @@ class DockerClient:
         self._run_parallel(rm, rows, timeout=15)
 
     def has_running_job(self, name: str) -> bool | None:
-        """Whether a Runner.Worker process (one per job) is alive in the container.
+        """Whether a job is running in the container.
 
-        The listener only forks a worker once it has accepted a job, so this is
-        ground truth that GitHub's online/busy flags are not: under heavy load
-        GitHub reports working runners offline. None when Docker cannot say.
-        `docker top` reads the host process table; nothing is executed inside.
+        GitHub: a Runner.Worker process is alive (the listener forks one per
+        accepted job). This is ground truth that GitHub's online/busy flags are
+        not: under heavy load GitHub reports working runners offline.
+        Gitea: gitea-runner is PID 1 and a job shows as any other process beside it.
+        ponytail: a gap between two steps reads as idle; only stuck reaping uses this.
+        None when Docker cannot say. `docker top` reads the host process table;
+        nothing is executed inside.
         """
         out, code = self._capture(["top", name])
         if code != 0:
             return None
-        return "Runner.Worker" in out
+        if "Runner.Worker" in out:
+            return True
+        processes = out.splitlines()[1:]
+        daemon = [line for line in processes if "gitea-runner daemon" in line]
+        return bool(daemon) and len(processes) > len(daemon)
 
     def cleanup_stuck(self, prefix: str, online_names: set[str], timeout_minutes: int = 8) -> None:
         """Kill containers that never came online within the timeout.
@@ -688,6 +695,8 @@ class DockerClient:
                 f"RUNNER_LABELS={pool.runner_labels}",
             ]
         )
+        if pool.is_gitea:
+            args.extend(["-e", "RORCH_PROVIDER=gitea", "-e", f"GITEA_URL={pool.base_url}"])
         for var in TOOL_CACHE_ENV:
             args.extend(["-e", f"{var}={TOOL_CACHE_DIR}"])
 

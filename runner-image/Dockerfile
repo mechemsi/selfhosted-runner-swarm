@@ -156,6 +156,16 @@ RUN curl -o runner.tar.gz -L \
     && ./bin/installdependencies.sh \
     && chown -R runner:runner /home/runner
 
+# gitea-runner: pools with provider gitea start this instead of the GitHub agent.
+ARG GITEA_RUNNER_VERSION=5.3.0
+ARG GITEA_RUNNER_XZ_SHA256=6ff7c09b57a6fea7e6848080d0c338c7d2f3b99c7939a48e45ed376752d65bb9
+RUN curl -fsSL -o /tmp/gitea-runner.xz \
+      "https://gitea.com/gitea/runner/releases/download/v${GITEA_RUNNER_VERSION}/gitea-runner-${GITEA_RUNNER_VERSION}-linux-amd64.xz" \
+    && echo "${GITEA_RUNNER_XZ_SHA256}  /tmp/gitea-runner.xz" | sha256sum -c - \
+    && xz -d /tmp/gitea-runner.xz \
+    && install -m 0755 /tmp/gitea-runner /usr/local/bin/gitea-runner \
+    && rm -f /tmp/gitea-runner
+
 COPY entrypoint.sh /entrypoint.sh
 # 0755, not `chmod +x`. COPY preserves the host file's mode, and `+x` only adds
 # the execute bit — a host file at 0600 becomes 0711, which bash cannot run as
