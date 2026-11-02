@@ -21,6 +21,7 @@ from rorch.config import (
     validate_pools,
 )
 from rorch.docker_client import ORCHESTRATOR_CONTAINER, DockerClient
+from rorch.gitea_client import ForgeClients
 from rorch.github_client import DEFAULT_MAX_CONCURRENT_REQUESTS, GitHubClient
 from rorch.lanes import TickLanes
 from rorch.resolver import ConfigResolver, EffectiveConfig
@@ -59,6 +60,7 @@ class Runtime:
     store: Store | None
     resolver: ConfigResolver
     github: GitHubClient
+    forge: ForgeClients
     docker: DockerClient
     scaler: PoolScaler
 
@@ -142,7 +144,8 @@ def _build_runtime() -> Runtime:
     github = GitHubClient(
         rate_limit_reserve=rate_limit_reserve, max_concurrent_requests=github_concurrency
     )
-    docker = DockerClient(store=store)
+    forge = ForgeClients(github, max_concurrent_requests=github_concurrency)
+    docker = DockerClient(store=store, registration_token=forge.registration_token)
     return Runtime(
         pools=pools,
         poll=poll,
@@ -161,8 +164,9 @@ def _build_runtime() -> Runtime:
         store=store,
         resolver=resolver,
         github=github,
+        forge=forge,
         docker=docker,
-        scaler=PoolScaler(github, docker, max_total_runners=max_total_runners, store=store),
+        scaler=PoolScaler(forge, docker, max_total_runners=max_total_runners, store=store),
     )
 
 
@@ -197,7 +201,7 @@ def _log_banner(runtime: Runtime) -> None:
         f"{runtime.ci_container_max_age}m" if runtime.ci_container_max_age else "disabled",
     )
     log.info("State store: %s", "enabled" if runtime.store else "disabled (config.yml only)")
-    _warn_public_repo_pools(runtime.pools, runtime.github)
+    _warn_public_repo_pools(runtime.pools, runtime.forge)
     log.info("=" * 60)
 
 
@@ -305,7 +309,7 @@ def _housekeeping(runtime: Runtime) -> None:
         log.error("History prune failed", exc_info=True)
 
 
-def _warn_public_repo_pools(pools: list, github: GitHubClient) -> None:
+def _warn_public_repo_pools(pools: list, forge: ForgeClients) -> None:
     """Flag repo-level pools aimed at public repositories.
 
     `include_public_repos` only filters pools that *discover* repositories. A
@@ -315,7 +319,7 @@ def _warn_public_repo_pools(pools: list, github: GitHubClient) -> None:
     A warning rather than a refusal: this must never stop a running deployment
     from starting.
     """
-    public = [p for p in pools if p.repo and github.is_public_repo(p) is True]
+    public = [p for p in pools if p.repo and forge.is_public_repo(p) is True]
     if not public:
         return
     for pool in public:

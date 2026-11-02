@@ -77,12 +77,24 @@ class PoolConfig:
     # read-only, so keep it outside any directory a job can write. config.yml
     # only: it is not a dashboard tunable.
     job_started_hook: str = ""
+    # Which forge the pool's runners register with. "gitea" needs base_url and
+    # its own pat: it never falls back to the global GitHub token. config.yml only:
+    # through the API, a URL plus any env var name would send that secret anywhere.
+    provider: str = "github"
+    base_url: str = ""
+
+    @property
+    def is_gitea(self) -> bool:
+        return self.provider == "gitea"
 
     @property
     def label_set(self) -> frozenset[str]:
         """Labels the runner registers with: the configured ones plus the
-        defaults config.sh always adds. GitHub compares labels case-insensitively."""
+        defaults config.sh always adds. GitHub compares labels case-insensitively.
+        gitea-runner adds no defaults, so a Gitea pool has only what it lists."""
         configured = {label.strip().lower() for label in self.runner_labels.split(",")}
+        if self.is_gitea:
+            return frozenset(configured - {""})
         return frozenset((configured | {"self-hosted", "linux", "x64"}) - {""})
 
     def serves_labels(self, labels: list[str]) -> bool:
@@ -284,7 +296,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
 
     pools: list[PoolConfig] = []
     for p in raw.get("pools", []):
-        pat = resolve_env(p.get("pat", "")) or global_pat
+        provider = str(p.get("provider", "github")).lower()
+        # A Gitea pool must not inherit the GitHub token: it would go to another server.
+        pat = resolve_env(p.get("pat", "")) or (global_pat if provider == "github" else "")
         scope = str(p.get("scope", "organization")).lower()
         pools.append(
             PoolConfig(
@@ -326,6 +340,8 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 ),
                 exclude_repos=_as_csv(p.get("exclude_repos", defaults.get("exclude_repos", ""))),
                 job_started_hook=str(p.get("job_started_hook", "")).strip(),
+                provider=provider,
+                base_url=str(p.get("base_url", "")).strip().rstrip("/"),
             )
         )
     return pools
@@ -368,6 +384,12 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
             errors.append(f"Pool '{p.name}': pat is missing or unresolved (got: '{p.pat}')")
         if not p.owner:
             errors.append(f"Pool '{p.name}': owner is required")
+        if p.provider not in {"github", "gitea"}:
+            errors.append(f"Pool '{p.name}': unsupported provider '{p.provider}'")
+        if p.is_gitea and not p.base_url.startswith(("http://", "https://")):
+            errors.append(f"Pool '{p.name}': a gitea pool needs base_url (http:// or https://)")
+        if p.provider == "github" and p.base_url:
+            errors.append(f"Pool '{p.name}': base_url only applies to provider gitea")
         if p.scope not in {"organization", "personal", "repository"}:
             errors.append(f"Pool '{p.name}': unsupported scope '{p.scope}'")
         if p.scope == "personal" and p.repo:
