@@ -31,7 +31,11 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 
 # ── Validation ────────────────────────────────────────────────────────────────
-required_vars=("GITHUB_PAT" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
+if [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
+    required_vars=("GITEA_RUNNER_REGISTRATION_TOKEN" "GITEA_URL" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
+else
+    required_vars=("GITHUB_PAT" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
+fi
 for var in "${required_vars[@]}"; do
     if [[ -z "${!var}" ]]; then
         echo "ERROR: $var is required"
@@ -101,19 +105,9 @@ echo "    Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null
 
 # ── Gitea: gitea-runner instead of the GitHub agent ──────────────────────────
 if [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
-    echo "==> Fetching Gitea registration token..."
-    GITEA_RUNNER_REGISTRATION_TOKEN=$(curl -s -X POST \
-        -H "Authorization: token ${GITHUB_PAT}" \
-        "${GITEA_URL%/}/api/v1/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/runners/registration-token" \
-        | jq -r .token)
-    if [[ -z "$GITEA_RUNNER_REGISTRATION_TOKEN" || "$GITEA_RUNNER_REGISTRATION_TOKEN" == "null" ]]; then
-        echo "ERROR: Failed to get a Gitea registration token. Check the pool's pat and repo access."
-        exit 1
-    fi
+    # The orchestrator fetched this token, so the account token never enters this container.
+    # A job with the Docker socket can still read it through `docker inspect`; it only registers runners.
     export GITEA_RUNNER_REGISTRATION_TOKEN
-    # Jobs run in this environment: the account token must not reach them.
-    unset GITHUB_PAT
-
     # :host = jobs run directly in this container, with its tools and caches, as on GitHub.
     GITEA_LABELS=$(echo "$RUNNER_LABELS" | tr -d ' ' | sed -E 's/([^,]+)/\1:host/g')
     cat > gitea-runner.yaml <<EOF

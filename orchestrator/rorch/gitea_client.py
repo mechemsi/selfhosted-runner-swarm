@@ -25,6 +25,12 @@ class GiteaClient(GitHubClient):
     def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
         return super()._request(pat, path.replace("per_page=", "limit="), method)
 
+    def registration_token(self, pool: PoolConfig) -> str | None:
+        """Token that can only register runners, so a runner never holds the account token."""
+        data = self._request(pool.pat, f"{pool.api_runners_path}/registration-token", "POST")
+        token = data.get("token") if isinstance(data, dict) else None
+        return token if isinstance(token, str) and token else None
+
 
 class ForgeClients:
     """RunnerAPIClient that sends each pool's calls to the forge that pool belongs to.
@@ -44,14 +50,18 @@ class ForgeClients:
         self._lock = Lock()
 
     def _for(self, pool: PoolConfig) -> GitHubClient:
-        if not pool.is_gitea:
-            return self._github
+        return self._gitea_client(pool) if pool.is_gitea else self._github
+
+    def _gitea_client(self, pool: PoolConfig) -> GiteaClient:
         with self._lock:
             client = self._gitea.get(pool.base_url)
             if client is None:
                 client = GiteaClient(pool.base_url, max_concurrent_requests=self._concurrency)
                 self._gitea[pool.base_url] = client
             return client
+
+    def registration_token(self, pool: PoolConfig) -> str | None:
+        return self._gitea_client(pool).registration_token(pool)
 
     def list_repositories(self, pool: PoolConfig) -> list[str] | None:
         return self._for(pool).list_repositories(pool)

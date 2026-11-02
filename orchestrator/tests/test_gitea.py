@@ -10,10 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rorch.config import PoolConfig, _load_from_yaml, default_pat_env, validation_errors
+from rorch.config import PoolConfig, _load_from_yaml, validation_errors
 from rorch.docker_client import DockerClient
 from rorch.gitea_client import ForgeClients, GiteaClient
 from rorch.github_client import GitHubClient
+from rorch.resolver import IDENTITY_FIELDS, TUNABLE_FIELDS
 
 URL = "http://gitea.lan:3000"
 
@@ -83,10 +84,6 @@ class TestConfig:
         assert pool.serves_labels(["gitea"])
         # A GitHub pool would claim linux because config.sh adds it; this runner has no such label.
         assert not pool.serves_labels(["linux"])
-
-    def test_default_pat_env(self) -> None:
-        assert default_pat_env({"provider": "gitea"}) == "GITEA_PAT"
-        assert default_pat_env({}) == "GITHUB_PAT"
 
 
 class TestGiteaClient:
@@ -164,3 +161,46 @@ class TestJobDetection:
         client = DockerClient()
         client._capture = MagicMock(return_value=(top, 0))  # type: ignore[method-assign]
         assert client.has_running_job("c") is expected
+
+
+class TestAccountTokenStaysOut:
+    def test_api_cannot_set_the_server_a_token_goes_to(self) -> None:
+        assert not {"provider", "base_url"} & (IDENTITY_FIELDS | TUNABLE_FIELDS)
+
+    def test_registration_token_is_requested_from_the_pools_repo(self) -> None:
+        client = GiteaClient(URL)
+        with patch("urllib.request.urlopen", return_value=_Response({"token": "reg"})) as call:
+            assert client.registration_token(_pool()) == "reg"
+        request = call.call_args.args[0]
+        assert request.method == "POST"
+        assert request.full_url == f"{URL}/api/v1/repos/me/app/actions/runners/registration-token"
+
+    def _spawn(self, pool: PoolConfig, token: str | None) -> tuple[bool, list[str]]:
+        client = DockerClient(registration_token=lambda _pool: token)
+        client.ensure_image = MagicMock(return_value=True)  # type: ignore[method-assign]
+        seen: list[str] = []
+
+        def run(args: list[str]) -> int:
+            seen.extend(args)
+            return 0
+
+        client._exec = MagicMock(side_effect=run)  # type: ignore[method-assign]
+        return client.spawn_runner(pool), seen
+
+    def test_spawn_passes_the_registration_token_and_never_the_account_token(self) -> None:
+        ok, args = self._spawn(_pool(), "reg")
+        assert ok
+        assert "GITEA_RUNNER_REGISTRATION_TOKEN=reg" in args
+        assert f"GITEA_URL={URL}" in args
+        assert not any("gitea-token" in arg or arg.startswith("GITHUB_PAT=") for arg in args)
+
+    def test_spawn_fails_without_a_token(self) -> None:
+        ok, args = self._spawn(_pool(), None)
+        assert not ok
+        assert args == []
+
+    def test_github_spawn_still_passes_its_pat(self) -> None:
+        ok, args = self._spawn(PoolConfig(name="p", pat="gh", owner="o", repo="r"), None)
+        assert ok
+        assert "GITHUB_PAT=gh" in args
+        assert not any(arg.startswith("GITEA_") for arg in args)

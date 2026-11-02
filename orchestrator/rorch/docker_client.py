@@ -157,7 +157,12 @@ def _is_ci_container(name: str, networks: str, labels: str, patterns: Iterable[s
 class DockerClient:
     """Manages runner container lifecycle via Docker CLI."""
 
-    def __init__(self, store: Store | None = None) -> None:
+    def __init__(
+        self,
+        store: Store | None = None,
+        registration_token: Callable[[PoolConfig], str | None] | None = None,
+    ) -> None:
+        self._registration_token = registration_token
         self._build_lock = threading.Lock()
         self._build_retry_at: dict[str, float] = {}
         self._store = store
@@ -681,10 +686,30 @@ class DockerClient:
                 ]
             )
 
+        if pool.is_gitea:
+            token = self._registration_token(pool) if self._registration_token else None
+            if not token:
+                self._record(
+                    EVENT_SPAWN_FAILED,
+                    pool=pool.name,
+                    reason="no Gitea registration token",
+                )
+                return False
+            args.extend(
+                [
+                    "-e",
+                    "RORCH_PROVIDER=gitea",
+                    "-e",
+                    f"GITEA_URL={pool.base_url}",
+                    "-e",
+                    f"GITEA_RUNNER_REGISTRATION_TOKEN={token}",
+                ]
+            )
+        else:
+            args.extend(["-e", f"GITHUB_PAT={pool.pat}"])
+
         args.extend(
             [
-                "-e",
-                f"GITHUB_PAT={pool.pat}",
                 "-e",
                 f"GITHUB_OWNER={pool.owner}",
                 "-e",
@@ -695,8 +720,6 @@ class DockerClient:
                 f"RUNNER_LABELS={pool.runner_labels}",
             ]
         )
-        if pool.is_gitea:
-            args.extend(["-e", "RORCH_PROVIDER=gitea", "-e", f"GITEA_URL={pool.base_url}"])
         for var in TOOL_CACHE_ENV:
             args.extend(["-e", f"{var}={TOOL_CACHE_DIR}"])
 

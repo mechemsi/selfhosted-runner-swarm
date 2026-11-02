@@ -78,7 +78,8 @@ class PoolConfig:
     # only: it is not a dashboard tunable.
     job_started_hook: str = ""
     # Which forge the pool's runners register with. "gitea" needs base_url and
-    # its own pat: it never falls back to the global GitHub token.
+    # its own pat: it never falls back to the global GitHub token. config.yml only:
+    # through the API, a URL plus any env var name would send that secret anywhere.
     provider: str = "github"
     base_url: str = ""
 
@@ -181,11 +182,6 @@ def parse_size(value: str) -> int | None:
     if not match:
         return None
     return int(match.group(1)) * _SIZE_UNITS[match.group(2).lower()]
-
-
-def default_pat_env(data: dict[str, object]) -> str:
-    """Env var holding an API-created pool's token when it names none."""
-    return "GITEA_PAT" if str(data.get("provider", "")).lower() == "gitea" else "GITHUB_PAT"
 
 
 def _as_csv(value: object) -> str:

@@ -145,7 +145,7 @@ def _build_runtime() -> Runtime:
         rate_limit_reserve=rate_limit_reserve, max_concurrent_requests=github_concurrency
     )
     forge = ForgeClients(github, max_concurrent_requests=github_concurrency)
-    docker = DockerClient(store=store)
+    docker = DockerClient(store=store, registration_token=forge.registration_token)
     return Runtime(
         pools=pools,
         poll=poll,

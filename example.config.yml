@@ -107,7 +107,7 @@ pools:
   #   base_url: http://gitea.lan:3000
   #   owner: my-gitea-username
   #   scope: personal
-  #   pat:   "${GITEA_PAT}"             # required, never falls back to GITHUB_PAT
+  #   pat:   "${GITEA_PAT}"             # required, never falls back to GITHUB_PAT; stays in the orchestrator
   #   runner_labels: self-hosted,linux,x64,docker
   #   max_runners: 2
 
