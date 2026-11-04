@@ -344,6 +344,14 @@ it are merged, while each pool still counts only the queued jobs its labels can 
 pool for a repository therefore adds its runners request and nothing more, which leaves room
 to lower `github_poll_interval` for repositories whose jobs should start sooner.
 
+A second orchestrator on another host can serve the same pools as overflow: set `instance: pve3`
+at the top of its `config.yml` (runner names become `gh-runner-pve3-<pool>-...`, so neither host
+counts or deregisters the other's runners), `queued_min_age: 120` and `min_idle: 0` in `defaults`,
+and a `max_total_runners` that fits the host. Workflows change nothing. It starts runners only for
+jobs the first host left waiting that long, so `queued_min_age` must exceed its normal start-up time.
+Both hosts share a token's request budget. A job can still be taken by a first-host runner just as
+the overflow runner starts; that spare takes the next job or ends at `max_runner_lifetime`.
+
 Every response updates the token's remaining/reset budget. RORCH stops when
 `GITHUB_RATE_LIMIT_RESERVE` requests remain, resumes after `X-RateLimit-Reset`, and honors
 `Retry-After` for secondary limits. During a cooldown, scaling is skipped rather than interpreting

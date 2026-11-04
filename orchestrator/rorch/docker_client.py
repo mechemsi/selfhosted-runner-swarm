@@ -178,7 +178,10 @@ class DockerClient:
 
     @staticmethod
     def _pool_of(container: str) -> str:
-        """Pool name embedded in `gh-runner-{pool}-{uid}`."""
+        """Pool name embedded in `gh-runner-{pool}-{uid}`.
+
+        ponytail: with `instance` set this reads `{instance}-{pool}`, only event labels see it.
+        """
         parts = container.split("-")
         return "-".join(parts[2:-1]) if len(parts) > 3 else ""
 

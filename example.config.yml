@@ -80,6 +80,8 @@ defaults:
   max_runners:   3
   min_idle:      1
   github_poll_interval: 60      # minimum seconds between API scans for each pool
+  # Overflow host only: start runners just for jobs queued this many seconds. 0 = all jobs.
+  # queued_min_age: 120
   # Minutes a runner container may run without GitHub listing it online or busy
   # before it is killed as stuck (never registered). A container with a job in
   # progress (Runner.Worker alive inside it) is never killed. Raise it if the

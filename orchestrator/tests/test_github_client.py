@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -277,6 +278,10 @@ class TestPublicRepoDetection:
         assert self._client(None, monkeypatch).is_public_repo(pool) is None
 
 
+def _queued(created_at: str) -> dict[str, object]:
+    return {"id": 1, "status": "queued", "labels": ["self-hosted"], "created_at": created_at}
+
+
 def _scan_client(responses: dict[str, object]) -> GitHubClient:
     """A client whose GET returns the response of the first path fragment that matches."""
     client = GitHubClient()
@@ -335,6 +340,27 @@ class TestQueuedCount:
         assert client.get_queued_count(pool) == 1
         deploy_pool = replace(pool, runner_labels="self-hosted,linux,deploy")
         assert client.get_queued_count(deploy_pool) == 2
+
+    def test_queued_min_age_counts_only_older_jobs(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=queued": _RUNS,
+                "status=pending": {"workflow_runs": []},
+                "status=in_progress": {"workflow_runs": []},
+                "runs/1/jobs": {
+                    "jobs": [
+                        _queued("2026-01-01T00:00:00Z"),
+                        _queued("2026-01-01T00:09:30Z"),
+                        {"id": 3, "status": "queued", "labels": ["self-hosted"]},
+                        _queued("not a date"),
+                    ]
+                },
+            }
+        )
+        client._wall_clock = lambda: datetime(2026, 1, 1, 0, 10, tzinfo=UTC).timestamp()
+
+        assert client.get_queued_count(pool) == 4
+        assert client.get_queued_count(replace(pool, queued_min_age=120)) == 3  # 30 s old one waits
 
     def test_pending_run_with_queued_job_counts_for_its_pool(self, pool: PoolConfig) -> None:
         """A run can sit "pending" while its jobs are already queued for a runner."""
