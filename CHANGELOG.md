@@ -1,3 +1,9 @@
+## [1.4.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.3.0...v1.4.0) (2026-11-04)
+
+### Features
+
+* **pools:** overflow host support with instance and queued_min_age ([#39](https://github.com/mechemsi/selfhosted-runner-swarm/issues/39)) ([5e52d86](https://github.com/mechemsi/selfhosted-runner-swarm/commit/5e52d8614021bdc91a74113e653d69ea7f97e703))
+
 ## [1.3.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.2.5...v1.3.0) (2026-11-02)
 
 ### Features
