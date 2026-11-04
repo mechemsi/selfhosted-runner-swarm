@@ -62,6 +62,13 @@ class TestPoolConfig:
     def test_container_prefix(self, pool: PoolConfig) -> None:
         assert pool.container_prefix == "gh-runner-test-pool"
 
+    def test_instance_separates_runner_names_of_same_pool(self, pool: PoolConfig) -> None:
+        other = replace(pool, instance="pve3")
+        assert other.container_prefix == f"gh-runner-pve3-{pool.name}"
+        assert not other.container_prefix.startswith(f"{pool.container_prefix}-")
+        assert validation_errors([other]) == []
+        assert validation_errors([replace(pool, instance="p-3")])
+
     def test_container_prefix_sanitizes(self) -> None:
         p = PoolConfig(name="My Pool/Test", pat="x", owner="o")
         assert p.container_prefix == "gh-runner-my-pool-test"

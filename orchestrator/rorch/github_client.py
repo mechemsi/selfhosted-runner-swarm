@@ -13,6 +13,7 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Self
 
 from rorch.config import PoolConfig
@@ -482,11 +483,21 @@ class GitHubClient:
                 # Only jobs this pool's runners can take: a job for another
                 # pool's labels (or a GitHub-hosted one) must not start runners
                 # here that sit idle, or worse, take a job meant for elsewhere.
-                if pool.serves_labels(job.get("labels") or []):
+                if pool.serves_labels(job.get("labels") or []) and self._old_enough(pool, job):
                     queued += 1
             elif jobs is not None:
                 jobs.append(_job_info(job, run, repo))
         return QueueScan(queued=queued)
+
+    def _old_enough(self, pool: PoolConfig, job: dict[str, Any]) -> bool:
+        """A job without a readable timestamp counts: better a spare runner than a stuck job."""
+        if not pool.queued_min_age:
+            return True
+        try:
+            created = datetime.fromisoformat(str(job["created_at"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            return True
+        return self._wall_clock() - created.timestamp() >= pool.queued_min_age
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         """Fetch runner state once for cleanup and scaling decisions."""

@@ -38,6 +38,12 @@ class PoolConfig:
     scope: str = "organization"
     repo_discovery_ttl: int = 600
     github_poll_interval: int = 60
+    # Overflow host: only jobs queued at least this many seconds start runners here,
+    # so a second orchestrator stays out of the way until the first one falls behind.
+    queued_min_age: int = 0
+    # Set when several orchestrators serve the same pools: it keeps each host's runner
+    # names apart, so neither counts or deregisters the other's runners as its own.
+    instance: str = ""
     # Minutes a runner container may run without GitHub listing it online or
     # busy before it counts as stuck and is killed. A container running a job
     # (Runner.Worker alive inside it) is never killed, whatever GitHub says.
@@ -147,7 +153,7 @@ class PoolConfig:
     @property
     def container_prefix(self) -> str:
         safe = self.name.lower().replace(" ", "-").replace("/", "-")
-        return f"gh-runner-{safe}"
+        return f"gh-runner-{self.instance}-{safe}" if self.instance else f"gh-runner-{safe}"
 
     @property
     def api_runners_path(self) -> str:
@@ -313,6 +319,8 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 github_poll_interval=int(
                     p.get("github_poll_interval", defaults.get("github_poll_interval", 60))
                 ),
+                queued_min_age=int(p.get("queued_min_age", defaults.get("queued_min_age", 0))),
+                instance=str(raw.get("instance", "")).strip().lower(),
                 stuck_timeout=int(p.get("stuck_timeout", defaults.get("stuck_timeout", 8))),
                 repo_check_workers=int(
                     p.get("repo_check_workers", defaults.get("repo_check_workers", 6))
@@ -400,6 +408,10 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
             errors.append(f"Pool '{p.name}': repo_discovery_ttl cannot be negative")
         if p.github_poll_interval != 0 and not 15 <= p.github_poll_interval <= 3600:
             errors.append(f"Pool '{p.name}': github_poll_interval must be 0 or between 15 and 3600")
+        if not 0 <= p.queued_min_age <= 86400:
+            errors.append(f"Pool '{p.name}': queued_min_age must be between 0 and 86400 seconds")
+        if p.instance and not re.fullmatch(r"[a-z0-9]+", p.instance):
+            errors.append(f"instance '{p.instance}' must be lowercase letters and digits only")
         if not 1 <= p.stuck_timeout <= 1440:
             errors.append(f"Pool '{p.name}': stuck_timeout must be between 1 and 1440 minutes")
         if not 1 <= p.repo_check_workers <= 32:
