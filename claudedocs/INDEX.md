@@ -15,6 +15,7 @@ Master index for project documentation.
 ## Plans
 
 - [Implement personal account all-repositories runner pool](plans/2026-07-11-personal-all-repositories.md) — Add discovery and account-wide capacity allocation.
+- [Peer federation](plans/2026-11-06-peer-federation.md) - Equal orchestrators share a queue by free capacity and temperature.
 
 ## Implementations
 
@@ -24,6 +25,7 @@ Master index for project documentation.
 ## Decisions
 
 - [001 — config.yml stays the default, the database is only an overlay](decisions/001-config-yml-stays-the-default.md) — Why runtime config edits are an overlay rather than a rewrite or a new source of truth.
+- [002 - Peers split the queue deterministically, no leader](decisions/002-peer-federation-split-not-leader.md) - Why each host computes the same split instead of electing a leader.
 
 ## Audits
 
