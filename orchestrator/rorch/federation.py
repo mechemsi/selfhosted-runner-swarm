@@ -12,6 +12,7 @@ See claudedocs/decisions/002-peer-federation-split-not-leader.md.
 import hmac
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -160,13 +161,69 @@ def build_snapshot(
 # ---------------------------------------------------------------- peers
 
 
+MAX_COUNT = 1000
+MAX_CORES = 1024
+
+
+def _number(value: object, low: float, high: float, what: str) -> float:
+    """A finite number in [low, high]; anything else makes the whole snapshot invalid."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{what} is not a number")
+    if not math.isfinite(value) or not low <= value <= high:
+        raise ValueError(f"{what} out of range")
+    return value
+
+
+def validate_snapshot(data: object) -> Snapshot:
+    """Rebuild a peer snapshot from checked fields only. Raises ValueError on anything odd.
+
+    A peer is another machine: a bug or a hostile response there must not skew our split.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("snapshot is not an object")
+    instance = data.get("instance")
+    if not isinstance(instance, str) or not (instance == "" or _NAME_RE.fullmatch(instance)):
+        raise ValueError("bad instance")
+    host = data.get("host")
+    pools = data.get("pools")
+    if not isinstance(host, dict) or not isinstance(pools, dict) or len(pools) > MAX_COUNT:
+        raise ValueError("host or pools missing")
+    temp = host.get("temp_c")
+    clean_pools = {}
+    for name, counts in pools.items():
+        if not isinstance(name, str) or len(name) > 200 or not isinstance(counts, dict):
+            raise ValueError("bad pool entry")
+        clean_pools[name] = {
+            key: int(_number(counts.get(key), 0, MAX_COUNT, f"{name}.{key}"))
+            for key in ("running", "busy", "max_runners")
+        }
+    global_free = data.get("global_free")
+    return {
+        "instance": instance,
+        "version": str(data.get("version", ""))[:64],
+        "ts": _number(data.get("ts", 0), 0, 1e11, "ts"),
+        "host": {
+            "cores": int(_number(host.get("cores"), 1, MAX_CORES, "cores")),
+            "cpu_count": int(_number(host.get("cpu_count"), 1, MAX_CORES, "cpu_count")),
+            "load1": _number(host.get("load1"), 0, 100_000, "load1"),
+            "mem_total_mb": int(_number(host.get("mem_total_mb"), 0, 1 << 30, "mem_total_mb")),
+            "mem_available_mb": int(
+                _number(host.get("mem_available_mb"), 0, 1 << 30, "mem_available_mb")
+            ),
+            "temp_c": None if temp is None else _number(temp, -50, 150, "temp_c"),
+            "free_cores": int(_number(host.get("free_cores"), 0, MAX_CORES, "free_cores")),
+        },
+        "pools": clean_pools,
+        "global_free": (
+            None if global_free is None else int(_number(global_free, 0, MAX_COUNT, "global_free"))
+        ),
+    }
+
+
 def fetch_snapshot(url: str, token: str, timeout: float) -> Snapshot:
     req = urllib.request.Request(url + PEER_PATH, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        data = json.loads(response.read(256 * 1024))
-    if not isinstance(data, dict) or not isinstance(data.get("pools"), dict):
-        raise ValueError("not a peer snapshot")
-    return data
+        return json.loads(response.read(256 * 1024))
 
 
 @dataclass
@@ -192,7 +249,9 @@ class Federation:
             self._own = own
         for peer in self.config.peers:
             try:
-                snapshot = self.fetch(peer.url, self.token, self.config.timeout_seconds)
+                snapshot = validate_snapshot(
+                    self.fetch(peer.url, self.token, self.config.timeout_seconds)
+                )
             except Exception as error:  # a peer down must never stop our loop
                 with self._lock:
                     view = self._peers.setdefault(peer.name, PeerView())

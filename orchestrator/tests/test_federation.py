@@ -18,8 +18,10 @@ from rorch.federation import (
     parse_config,
     slot_for,
     split,
+    validate_snapshot,
 )
 
+HOST = {"cores": 8, "cpu_count": 8, "load1": 1.0, "mem_total_mb": 1, "mem_available_mb": 1}
 PEER = PeerConfig("pve3", "http://192.168.1.245:8081")
 
 
@@ -27,7 +29,7 @@ def snap(instance: str, free: int = 4, temp: float | None = 50.0, **pool: int) -
     counts = {"running": 0, "busy": 0, "max_runners": 6} | pool
     return {
         "instance": instance,
-        "host": {"free_cores": free, "temp_c": temp},
+        "host": {**HOST, "free_cores": free, "temp_c": temp},
         "pools": {"ci": counts},
         "global_free": None,
     }
@@ -159,6 +161,39 @@ def test_old_jobs_are_rescued_and_hot_host_spawns_nothing() -> None:
     hot.refresh(snap("orch", temp=90.0))
     assert hot.is_hot()
     assert hot.queue_input("ci", [500.0])[0] == 0
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda s: s["pools"]["ci"].update(busy="3"),
+        lambda s: s["pools"]["ci"].update(running=-1),
+        lambda s: s["pools"]["ci"].update(max_runners=10**9),
+        lambda s: s["pools"]["ci"].pop("busy"),
+        lambda s: s["host"].update(free_cores=float("nan")),
+        lambda s: s["host"].update(load1=float("inf")),
+        lambda s: s["host"].update(temp_c=900),
+        lambda s: s["host"].update(cores=True),
+        lambda s: s["host"].pop("cores"),
+        lambda s: s.update(global_free=-5),
+        lambda s: s.update(instance="../etc"),
+        lambda s: s.update(pools=["ci"]),
+        lambda s: s.pop("host"),
+    ],
+)
+def test_malformed_peer_snapshot_means_unreachable(corrupt: Any) -> None:
+    bad = snap("pve3")
+    corrupt(bad)
+    fed = federation(lambda *_: bad)
+    fed.refresh(snap("orch"))
+    assert not fed.covers("ci")
+    assert fed.status()["peers"][0]["ok"] is False
+
+
+def test_valid_snapshot_round_trips() -> None:
+    good = snap("pve3", temp=None) | {"ts": 1.0, "version": "1.5.0"}
+    assert validate_snapshot(good)["host"]["temp_c"] is None
+    assert validate_snapshot(good)["pools"] == good["pools"]
 
 
 def test_fetch_times_out_on_a_silent_peer() -> None:

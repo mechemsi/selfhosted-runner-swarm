@@ -702,7 +702,15 @@ class TestFederatedScaling:
         def host(name: str, free: int, temp: float | None) -> dict[str, object]:
             return {
                 "instance": name,
-                "host": {"free_cores": free, "temp_c": temp},
+                "host": {
+                    "cores": 8,
+                    "cpu_count": 8,
+                    "load1": 1.0,
+                    "mem_total_mb": 1,
+                    "mem_available_mb": 1,
+                    "free_cores": free,
+                    "temp_c": temp,
+                },
                 "pools": {"test-pool": {"running": 0, "busy": 0, "max_runners": 5}},
                 "global_free": None,
             }
@@ -727,6 +735,18 @@ class TestFederatedScaling:
         # equal free cores: 2 each; desired = max(min_idle 1, 0 + 2) = 2
         assert mock_docker.spawn_runner.call_count == 2
         assert scaler.pool_counts()["test-pool"] == {"running": 0, "busy": 0, "max_runners": 5}
+
+    def test_split_error_falls_back_to_the_solo_count(
+        self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        federation = self._federation(peer_free=4)
+        federation.queue_input = MagicMock(side_effect=ValueError("boom"))  # type: ignore[method-assign]
+        scaler.federation = federation
+        mock_github.get_queued_ages.return_value = [5.0] * 3
+        mock_github.list_runners.return_value = []
+        mock_docker.running_containers.return_value = []
+        scaler.tick(pool)
+        assert mock_docker.spawn_runner.call_count == 3  # all queued jobs, as when alone
 
     def test_hot_host_spawns_nothing(
         self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig

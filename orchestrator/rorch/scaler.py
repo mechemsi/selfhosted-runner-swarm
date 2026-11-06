@@ -378,7 +378,12 @@ class PoolScaler:
     def _federated_queue(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> int:
         assert self.federation is not None
         ages = self._github.get_queued_ages(pool, jobs)
-        queued, shares = self.federation.queue_input(pool.name, ages)
+        try:
+            queued, shares = self.federation.queue_input(pool.name, ages)
+        except Exception:
+            # Same count the solo path would have made, from the scan we already have.
+            log.error("[%s] federated split failed; scaling alone", pool.name, exc_info=True)
+            return sum(1 for a in ages if not pool.queued_min_age or a >= pool.queued_min_age)
         if ages:
             log.info(
                 "[%s] federated: %d queued, split %s, mine %d", pool.name, len(ages), shares, queued
