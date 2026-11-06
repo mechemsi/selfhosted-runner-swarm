@@ -10,6 +10,7 @@ import Pools from "./Pools";
 import Containers from "./Containers";
 import Jobs from "./Jobs";
 import Events from "./Events";
+import Hosts from "./Hosts";
 
 const POLL_MS = 5000;
 const DASHBOARD_VERSION = process.env.RORCH_DASHBOARD_VERSION ?? "unknown";
@@ -103,6 +104,7 @@ export default function Dashboard({ role }: { role: Role }) {
       <main>
         {state ? (
           <>
+            <Hosts host={state.host} federation={state.federation} />
             <Pools pools={state.pools} role={role} act={act} refresh={refresh} />
             <Containers containers={state.containers} role={role} act={act} />
             <Jobs jobs={state.jobs} />

@@ -70,6 +70,39 @@ export interface RunnerEvent {
   reason: string;
 }
 
+export interface HostMetrics {
+  cores: number;
+  cpu_count: number;
+  load1: number;
+  mem_total_mb: number;
+  mem_available_mb: number;
+  temp_c: number | null;
+  free_cores: number;
+}
+
+export interface PeerSnapshot {
+  instance: string;
+  version: string;
+  host: HostMetrics;
+  pools: Record<string, { running: number; busy: number; max_runners: number }>;
+  global_free: number | null;
+}
+
+export interface Federation {
+  enabled: boolean;
+  max_temp_c: number;
+  hot: boolean;
+  self: PeerSnapshot | null;
+  peers: {
+    name: string;
+    url: string;
+    ok: boolean;
+    age_seconds: number | null;
+    error: string;
+    snapshot: PeerSnapshot | null;
+  }[];
+}
+
 export interface State {
   pools: Pool[];
   containers: Container[];
@@ -83,6 +116,8 @@ export interface State {
   };
   rate_limit: { remaining?: number | null; blocked_until?: number };
   version?: string;
+  host?: HostMetrics;
+  federation?: Federation | null;
   ts: number;
 }
 

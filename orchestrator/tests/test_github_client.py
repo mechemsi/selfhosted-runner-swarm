@@ -361,6 +361,9 @@ class TestQueuedCount:
 
         assert client.get_queued_count(pool) == 4
         assert client.get_queued_count(replace(pool, queued_min_age=120)) == 3  # 30 s old one waits
+        # Federation sees every matching job with its age, whatever queued_min_age says.
+        ages = client.get_queued_ages(replace(pool, queued_min_age=120))
+        assert sorted(ages)[:2] == [30.0, 600.0] and len(ages) == 4
 
     def test_pending_run_with_queued_job_counts_for_its_pool(self, pool: PoolConfig) -> None:
         """A run can sit "pending" while its jobs are already queued for a runner."""

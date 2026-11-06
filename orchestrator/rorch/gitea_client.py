@@ -72,6 +72,9 @@ class ForgeClients:
     def get_queued_count(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> int:
         return self._for(pool).get_queued_count(pool, jobs)
 
+    def get_queued_ages(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> list[float]:
+        return self._for(pool).get_queued_ages(pool, jobs)
+
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         return self._for(pool).list_runners(pool)
 
