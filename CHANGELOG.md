@@ -1,3 +1,9 @@
+## [1.5.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.4.0...v1.5.0) (2026-11-06)
+
+### Features
+
+* **federation:** equal-peer scaling across orchestrators ([#40](https://github.com/mechemsi/selfhosted-runner-swarm/issues/40)) ([556be98](https://github.com/mechemsi/selfhosted-runner-swarm/commit/556be98da55bdfbceac47fa313a6576b1127074b))
+
 ## [1.4.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.3.0...v1.4.0) (2026-11-04)
 
 ### Features
