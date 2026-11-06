@@ -65,9 +65,10 @@ jobs:
           fi
 
           title="runner: agent $pinned is behind upstream $latest"
+          # Rule 2 again: one open issue for this finding, whatever versions it named before. Matching the title made
+          # a new issue for every upstream release (#31, #35, #37 all open at once).
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
-            --label runner-agent --json number,title \
-            --jq "[.[] | select(.title == \"$title\")] | .[0].number // empty")
+            --label runner-agent --json number --jq 'sort_by(.number) | .[0].number // empty')
 
           body=$(cat <<EOF
           \`runner-image/Dockerfile\` pins the GitHub Actions runner agent at **$pinned**.
@@ -89,7 +90,7 @@ jobs:
           )
 
           if [ -n "$existing" ]; then
-            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           else
             gh label create runner-agent --color 0e8a16 --force >/dev/null 2>&1 || true
             gh issue create --repo "$GITHUB_REPOSITORY" \
