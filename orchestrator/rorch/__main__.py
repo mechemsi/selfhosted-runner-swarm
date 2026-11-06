@@ -10,17 +10,19 @@ import threading
 from dataclasses import dataclass
 from types import FrameType
 
-from rorch import server
+from rorch import hostmetrics, server
 from rorch.config import (
     PoolConfig,
     load_ci_container_max_age,
     load_ci_container_patterns,
     load_config,
+    load_federation,
     load_max_runner_lifetime,
     load_max_total_runners,
     validate_pools,
 )
 from rorch.docker_client import ORCHESTRATOR_CONTAINER, DockerClient
+from rorch.federation import Federation, build_snapshot, create_peer_app
 from rorch.gitea_client import ForgeClients
 from rorch.github_client import DEFAULT_MAX_CONCURRENT_REQUESTS, GitHubClient
 from rorch.lanes import TickLanes
@@ -63,6 +65,7 @@ class Runtime:
     forge: ForgeClients
     docker: DockerClient
     scaler: PoolScaler
+    federation: Federation | None = None
 
 
 def main(stop: threading.Event | None = None) -> None:
@@ -73,6 +76,7 @@ def main(stop: threading.Event | None = None) -> None:
     runtime = _build_runtime()
     _log_banner(runtime)
     api = _start_dashboard(runtime)
+    peer_api = _start_peer_listener(runtime)
 
     # Build ahead of demand: doing it on the first spawn stalls a queued job.
     for image in {p.runner_image for p in runtime.pools}:
@@ -92,6 +96,8 @@ def main(stop: threading.Event | None = None) -> None:
                 maintenance.submit(HOUSEKEEPING_LANE, lambda: _housekeeping(runtime))
             stop.wait(runtime.poll)
     finally:
+        if peer_api is not None:
+            peer_api.stop()
         _shut_down(api, pool_lanes, maintenance)
 
 
@@ -146,6 +152,8 @@ def _build_runtime() -> Runtime:
     )
     forge = ForgeClients(github, max_concurrent_requests=github_concurrency)
     docker = DockerClient(store=store, registration_token=forge.registration_token)
+    scaler = PoolScaler(forge, docker, max_total_runners=max_total_runners, store=store)
+    scaler.federation = _build_federation()
     return Runtime(
         pools=pools,
         poll=poll,
@@ -166,7 +174,62 @@ def _build_runtime() -> Runtime:
         github=github,
         forge=forge,
         docker=docker,
-        scaler=PoolScaler(forge, docker, max_total_runners=max_total_runners, store=store),
+        scaler=scaler,
+        federation=scaler.federation,
+    )
+
+
+def _build_federation() -> Federation | None:
+    """None unless peers or a peer token are configured. A bad block disables it, never exits."""
+    config, errors = load_federation()
+    token = os.environ.get("RORCH_PEER_TOKEN", "").strip()
+    for error in errors:
+        log.error("%s; federation disabled", error)
+    if config.peers and not token:
+        log.error("federation peers configured but RORCH_PEER_TOKEN is empty; federation disabled")
+        return None
+    if not config.peers and not token:
+        return None
+    log.info(
+        "Federation: scaling %s, peers %s, max temp %.0f C",
+        "ON" if config.enabled else "off",
+        ", ".join(p.name for p in config.peers) or "none",
+        config.max_temp_c,
+    )
+    return Federation(config, token)
+
+
+def _start_peer_listener(runtime: Runtime) -> server.ApiServer | None:
+    """Read-only snapshot for peers, on its own port; only with a token."""
+    federation = runtime.federation
+    if federation is None or not federation.token:
+        return None
+    port = int(os.environ.get("RORCH_PEER_PORT", "8081"))
+    peer_api = server.ApiServer(
+        create_peer_app(federation), os.environ.get("RORCH_PEER_HOST", "0.0.0.0"), port
+    )
+    peer_api.start()
+    log.info("Peer snapshot listening on port %d", peer_api.port)
+    return peer_api
+
+
+def _refresh_federation(runtime: Runtime, effective: EffectiveConfig) -> None:
+    federation = runtime.federation
+    if federation is None:
+        return
+    counts = runtime.scaler.pool_counts()
+    pools = {
+        p.name: counts[p.name]
+        for p in effective.pools
+        if not p.is_personal_level and p.name in counts
+    }
+    global_free = None
+    if effective.max_total_runners:
+        running = len(runtime.docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+        global_free = max(0, effective.max_total_runners - running)
+    instance = next((p.instance for p in runtime.pools), "")
+    federation.refresh(
+        build_snapshot(instance, get_version(), hostmetrics.read(), pools, global_free)
     )
 
 
@@ -235,15 +298,27 @@ def _start_dashboard(runtime: Runtime) -> server.ApiServer | None:
             rate_limit_status=runtime.github.rate_limit_status,
             token=server.resolve_token(runtime.store),
             readonly_token=server.resolve_readonly_token(),
+            host_state=lambda: _host_state(runtime),
         ),
         host=os.environ.get("RORCH_API_HOST", "127.0.0.1"),
         port=int(os.environ.get("RORCH_API_PORT", "8080")),
     )
 
 
+def _host_state(runtime: Runtime) -> dict[str, object]:
+    federation = runtime.federation
+    own = federation.own() if federation else None
+    host = own["host"] if own else hostmetrics.read().as_dict()
+    return {"host": host, "federation": federation.status() if federation else None}
+
+
 def _tick(runtime: Runtime, pool_lanes: TickLanes, maintenance: TickLanes) -> None:
-    """Start whatever is due and return at once; nothing here waits for a pool."""
+    """Start whatever is due and return at once; only peer fetches (bounded timeout) wait."""
     effective = runtime.resolver.resolve()
+    try:
+        _refresh_federation(runtime, effective)
+    except Exception:
+        log.error("Federation refresh failed", exc_info=True)
     runtime.scaler.max_total_runners = effective.max_total_runners
 
     if effective.paused:

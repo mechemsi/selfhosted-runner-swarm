@@ -6,6 +6,7 @@
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 import urllib.error
@@ -52,9 +53,13 @@ class QueueScan:
 
     queued: int = 0
     failed: int = 0
+    # Age in seconds of every queued job this pool serves, ignoring queued_min_age.
+    ages: tuple[float, ...] = ()
 
     def __add__(self, other: Self) -> Self:
-        return type(self)(self.queued + other.queued, self.failed + other.failed)
+        return type(self)(
+            self.queued + other.queued, self.failed + other.failed, self.ages + other.ages
+        )
 
 
 def _job_info(job: dict[str, Any], run: dict[str, Any], repo: str) -> JobInfo:
@@ -415,6 +420,13 @@ class GitHubClient:
         makes the count a lower bound rather than aborting it: the scaler only scales up, so acting
         on what was counted still provisions more than skipping the pool would.
         """
+        return self._logged_scan(pool, jobs).queued
+
+    def get_queued_ages(self, pool: PoolConfig, jobs: list[JobInfo] | None = None) -> list[float]:
+        """Ages of every queued job the pool serves, for federated scaling (one scan, same cost)."""
+        return list(self._logged_scan(pool, jobs).ages)
+
+    def _logged_scan(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> QueueScan:
         scan = self._scan_queue(pool, jobs)
         if scan.failed:
             log.warning(
@@ -424,7 +436,7 @@ class GitHubClient:
                 scan.failed,
                 scan.queued,
             )
-        return scan.queued
+        return scan
 
     def _scan_queue(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> QueueScan:
         if pool.repo:
@@ -477,27 +489,26 @@ class GitHubClient:
         )
         if jobs_data is None:
             return QueueScan(failed=1)
-        queued = 0
+        ages: list[float] = []
         for job in jobs_data.get("jobs", []):
             if job.get("status") == "queued":
                 # Only jobs this pool's runners can take: a job for another
                 # pool's labels (or a GitHub-hosted one) must not start runners
                 # here that sit idle, or worse, take a job meant for elsewhere.
-                if pool.serves_labels(job.get("labels") or []) and self._old_enough(pool, job):
-                    queued += 1
+                if pool.serves_labels(job.get("labels") or []):
+                    ages.append(self._age(job))
             elif jobs is not None:
                 jobs.append(_job_info(job, run, repo))
-        return QueueScan(queued=queued)
+        queued = sum(1 for age in ages if not pool.queued_min_age or age >= pool.queued_min_age)
+        return QueueScan(queued=queued, ages=tuple(ages))
 
-    def _old_enough(self, pool: PoolConfig, job: dict[str, Any]) -> bool:
-        """A job without a readable timestamp counts: better a spare runner than a stuck job."""
-        if not pool.queued_min_age:
-            return True
+    def _age(self, job: dict[str, Any]) -> float:
+        """Seconds queued; an unreadable timestamp is infinitely old, so the job counts."""
         try:
             created = datetime.fromisoformat(str(job["created_at"]).replace("Z", "+00:00"))
         except (KeyError, ValueError):
-            return True
-        return self._wall_clock() - created.timestamp() >= pool.queued_min_age
+            return math.inf
+        return self._wall_clock() - created.timestamp()
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         """Fetch runner state once for cleanup and scaling decisions."""

@@ -28,6 +28,26 @@ max_runner_lifetime: 0
 # timeout). 0 = disabled.
 ci_container_max_age: 360
 
+# Federation: equal orchestrators on several hosts share one queue. Each host
+# publishes cores, load, memory, CPU temperature and per-pool running/busy on
+# port 8081 (needs RORCH_PEER_TOKEN in .env, the same on every host, and
+# RORCH_PEER_BIND=0.0.0.0 to reach it from the LAN). With `enabled: true`, a pool
+# that a fresh peer also runs scales on this host's share of the queue, split by
+# free cores; a host at or above max_temp_c starts no new runners; jobs older than
+# rescue_after_seconds count on every host. A peer that cannot be reached for
+# stale_after_seconds drops out and the host scales alone, as without this block.
+# Peers listed with `enabled: false` still show on the dashboard.
+# Each host needs a distinct top-level `instance:`.
+# federation:
+#   enabled: false
+#   max_temp_c: 85
+#   rescue_after_seconds: 180
+#   stale_after_seconds: 60
+#   timeout_seconds: 2
+#   peers:
+#     - name: pve3
+#       url: http://192.168.1.245:8081
+
 # The runner's own `services:` containers are recognised automatically (they
 # sit on a github_network_* network). Containers a workflow starts itself with
 # `docker run` carry no such marker; list name globs or `label=KEY` entries

@@ -14,6 +14,7 @@ import pytest
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
+from rorch.federation import Federation, FederationConfig, PeerConfig
 from rorch.protocols import JobInfo, RunnerInfo
 from rorch.scaler import PoolScaler
 from rorch.store import EVENT_DEREGISTER, PoolState, Store
@@ -692,3 +693,46 @@ class TestStuckReaperInputs:
         scaler.tick(replace(pool, stuck_timeout=12), PoolState())
 
         assert mock_docker.cleanup_stuck.call_args.kwargs == {"timeout_minutes": 12}
+
+
+class TestFederatedScaling:
+    """With a fresh peer the pool scales on this host's share of the queue."""
+
+    def _federation(self, peer_free: int, own_temp: float | None = 50.0) -> Federation:
+        def host(name: str, free: int, temp: float | None) -> dict[str, object]:
+            return {
+                "instance": name,
+                "host": {"free_cores": free, "temp_c": temp},
+                "pools": {"test-pool": {"running": 0, "busy": 0, "max_runners": 5}},
+                "global_free": None,
+            }
+
+        fed = Federation(
+            FederationConfig(enabled=True, peers=(PeerConfig("pve3", "http://p:8081"),)),
+            "tok",
+            fetch=lambda *_: host("pve3", peer_free, 50.0),
+        )
+        fed.refresh(host("orch", 4, own_temp))
+        return fed
+
+    def test_spawns_only_own_share(
+        self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        scaler.federation = self._federation(peer_free=4)
+        mock_github.get_queued_ages.return_value = [5.0] * 4
+        mock_github.list_runners.return_value = []
+        mock_docker.running_containers.return_value = []
+        scaler.tick(pool)
+        mock_github.get_queued_count.assert_not_called()
+        # equal free cores: 2 each; desired = max(min_idle 1, 0 + 2) = 2
+        assert mock_docker.spawn_runner.call_count == 2
+        assert scaler.pool_counts()["test-pool"] == {"running": 0, "busy": 0, "max_runners": 5}
+
+    def test_hot_host_spawns_nothing(
+        self, scaler: PoolScaler, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        scaler.federation = self._federation(peer_free=4, own_temp=91.0)
+        mock_github.get_queued_ages.return_value = [500.0] * 3
+        mock_docker.running_containers.return_value = []
+        scaler.tick(pool)
+        mock_docker.spawn_runner.assert_not_called()

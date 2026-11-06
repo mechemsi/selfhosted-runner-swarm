@@ -352,6 +352,17 @@ jobs the first host left waiting that long, so `queued_min_age` must exceed its 
 Both hosts share a token's request budget. A job can still be taken by a first-host runner just as
 the overflow runner starts; that spare takes the next job or ends at `max_runner_lifetime`.
 
+Two or more hosts can instead run as **equal peers** with a `federation:` block (see
+`example.config.yml` and [ADR 002](claudedocs/decisions/002-peer-federation-split-not-leader.md)).
+Each orchestrator publishes a read-only snapshot on port 8081 (cores, load, memory, CPU temperature,
+per-pool running/busy) behind `RORCH_PEER_TOKEN`, fetches its peers' snapshots every tick, and runs
+the same deterministic split: queued jobs go to the host with the most free cores per job already
+given, a host at or above `max_temp_c` takes none, and each host spawns only its own share.
+`queued_min_age` is ignored for federated pools; jobs older than `rescue_after_seconds` count on
+every host. An unreachable or stale peer drops out and the host scales exactly as it would alone.
+Personal pools are never federated. The dashboard's Hosts panel shows every peer; temperature reads
+"unknown" when the host has no readable sensor.
+
 Every response updates the token's remaining/reset budget. RORCH stops when
 `GITHUB_RATE_LIMIT_RESERVE` requests remain, resumes after `X-RateLimit-Reset`, and honors
 `Retry-After` for secondary limits. During a cooldown, scaling is skipped rather than interpreting
@@ -508,6 +519,8 @@ Jobs on the ordinary pool must then ask for a label the gated runner lacks (e.g.
 ```
 desired_runners = min(max_runners, max(min_idle, busy + queued))
 ```
+
+With federation on and a fresh peer, `queued` is this host's share of the queue (see above).
 
 - Always keeps at least `min_idle` runners warm
 - Spawns enough runners to cover all queued jobs

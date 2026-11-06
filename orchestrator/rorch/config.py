@@ -11,6 +11,9 @@ from dataclasses import dataclass, replace
 
 import yaml
 
+from rorch.federation import FederationConfig
+from rorch.federation import parse_config as parse_federation
+
 log = logging.getLogger(__name__)
 
 # work_tmpfs_size "auto" when memory_limit is not a plain size.
@@ -233,6 +236,15 @@ def load_max_total_runners(path: str = "config.yml") -> int:
         log.error("max_total_runners cannot be negative (got %d)", value)
         sys.exit(1)
     return value
+
+
+def load_federation(path: str = "config.yml") -> tuple[FederationConfig, list[str]]:
+    """The optional `federation:` block; errors come back to the caller, never exit."""
+    raw: object = None
+    if os.path.exists(path):
+        with open(path) as f:
+            raw = (yaml.safe_load(f) or {}).get("federation")
+    return parse_federation(raw)
 
 
 def load_max_runner_lifetime(path: str = "config.yml") -> int:

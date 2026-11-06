@@ -44,10 +44,17 @@ services:
       - RORCH_API_TOKEN=${RORCH_API_TOKEN:-}
       - RORCH_API_READONLY_TOKEN=${RORCH_API_READONLY_TOKEN:-}
       - HISTORY_RETENTION_DAYS=${HISTORY_RETENTION_DAYS:-365}
+      # Federation: read-only snapshot for peer orchestrators (see federation: in
+      # config.yml). Off unless RORCH_PEER_TOKEN is set; same token on every peer.
+      - RORCH_PEER_TOKEN=${RORCH_PEER_TOKEN:-}
+      - RORCH_PEER_PORT=8081
       - RORCH_DB_URL=mysql://${MARIADB_USER:-rorch}:${MARIADB_PASSWORD}@mariadb:3306/${MARIADB_DATABASE:-rorch}
-    # Deliberately NOT published. The dashboard reaches it over the compose
-    # network; exposing this port would expose an API that can start root
-    # containers through the mounted Docker socket.
+    # 8080 is deliberately NOT published. The dashboard reaches it over the
+    # compose network; exposing it would expose an API that can start root
+    # containers through the mounted Docker socket. Only the read-only peer
+    # port is published, on loopback unless RORCH_PEER_BIND says otherwise.
+    ports:
+      - "${RORCH_PEER_BIND:-127.0.0.1}:${RORCH_PEER_PORT:-8081}:8081"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # manage runner containers
       - ./config.yml:/app/config.yml:ro             # pool config (hot-reload on restart)

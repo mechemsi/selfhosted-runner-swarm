@@ -10,6 +10,7 @@ from typing import Any
 
 from flask import current_app, request
 
+from rorch import hostmetrics
 from rorch.config import PoolConfig
 from rorch.docker_client import ORCHESTRATOR_CONTAINER
 from rorch.protocols import ContainerManager
@@ -101,8 +102,11 @@ class Deps:
         rate_limit_status: Callable[[], dict[str, Any]] | None = None,
         token: str = "",
         readonly_token: str = "",
+        host_state: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.store = store
+        # {"host": metrics, "federation": status or None}, merged into /api/state.
+        self.host_state = host_state or _local_host_state
         self.resolver = resolver
         self.docker = docker
         self.rate_limit_status = rate_limit_status or (lambda: {})
@@ -117,6 +121,10 @@ class Deps:
         # pool would otherwise each start from the same row and one change
         # would silently disappear. Held only for store calls, never Docker.
         self.config_lock = threading.Lock()
+
+
+def _local_host_state() -> dict[str, Any]:
+    return {"host": hostmetrics.read().as_dict(), "federation": None}
 
 
 def _deps() -> Deps:

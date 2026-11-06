@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from rorch.config import PoolConfig
 from rorch.errors import GitHubRateLimitError
+from rorch.federation import Federation
 from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
 from rorch.store import EVENT_DEREGISTER, PoolState, Store, TickSnapshot
 
@@ -79,6 +80,10 @@ class PoolScaler:
         # Spawns granted against the global cap whose `docker run` has not
         # returned yet, so `docker ps` cannot see them.
         self._reserved_spawns = 0
+        # Set by the daemon when a `federation:` block exists; None scales alone.
+        self.federation: Federation | None = None
+        # Last inspection per non-personal pool, published to peers.
+        self._pool_counts: dict[str, dict[str, int]] = {}
 
     @property
     def max_total_runners(self) -> int:
@@ -176,11 +181,30 @@ class PoolScaler:
         finally:
             self._release_spawns(1)
 
+    def pool_counts(self) -> dict[str, dict[str, int]]:
+        with self._state_lock:
+            return dict(self._pool_counts)
+
     def _tick_single(self, pool: PoolConfig, draining: bool = False) -> None:
-        inspection = self._inspect_pool(pool)
+        federation = self.federation
+        federated = federation is not None and federation.covers(pool.name)
+        inspection = self._inspect_pool(pool, federated=federated)
+        with self._state_lock:
+            self._pool_counts[pool.name] = {
+                "running": inspection.running,
+                "busy": inspection.busy,
+                "max_runners": pool.max_runners,
+            }
         self._log_inspection(inspection)
         if draining:
             log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
+            to_spawn = 0
+        elif federation is not None and federation.is_hot():
+            log.warning(
+                "[%s] Host at or above %.0f C: no new runners",
+                pool.name,
+                federation.config.max_temp_c,
+            )
             to_spawn = 0
         else:
             to_spawn = self._calculate_spawn_count(pool, inspection)
@@ -291,8 +315,11 @@ class PoolScaler:
             return None
         return sorted(inspections, key=lambda item: item.pool.repo)
 
-    def _inspect_pool(self, pool: PoolConfig) -> PoolInspection:
-        """Fetch Docker and GitHub state once for one pool."""
+    def _inspect_pool(self, pool: PoolConfig, federated: bool = False) -> PoolInspection:
+        """Fetch Docker and GitHub state once for one pool.
+
+        `federated`: `queued` becomes this host's share of the queue (see rorch.federation).
+        """
         started = time.monotonic()
         prefix = pool.container_prefix
         self._docker.cleanup_exited(prefix)
@@ -330,7 +357,11 @@ class PoolScaler:
         # The queue scan already fetches every job of every active run, so
         # collecting them here is free and answers "what did this runner run".
         jobs: list[JobInfo] | None = [] if self._store is not None else None
-        queued = self._github.get_queued_count(pool, jobs)
+        queued = (
+            self._federated_queue(pool, jobs)
+            if federated
+            else self._github.get_queued_count(pool, jobs)
+        )
         if jobs is not None:
             self._record_jobs(pool, jobs)
 
@@ -343,6 +374,16 @@ class PoolScaler:
             offline_runners=offline_runners,
             duration_seconds=time.monotonic() - started,
         )
+
+    def _federated_queue(self, pool: PoolConfig, jobs: list[JobInfo] | None) -> int:
+        assert self.federation is not None
+        ages = self._github.get_queued_ages(pool, jobs)
+        queued, shares = self.federation.queue_input(pool.name, ages)
+        if ages:
+            log.info(
+                "[%s] federated: %d queued, split %s, mine %d", pool.name, len(ages), shares, queued
+            )
+        return queued
 
     def _run_runner_operations(
         self,

@@ -12,6 +12,7 @@ config, pools and the resolved EffectiveConfig are the real types.
 import signal
 import threading
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -287,3 +288,43 @@ def test_sigterm_and_sigint_request_a_clean_stop() -> None:
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+class TestFederationWiring:
+    CONFIG = "federation:\n  enabled: true\n  peers:\n    - name: pve3\n      url: http://p:8081\n"
+
+    def test_peers_without_token_disable_federation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.yml").write_text(self.CONFIG)
+        monkeypatch.delenv("RORCH_PEER_TOKEN", raising=False)
+        assert daemon._build_federation() is None
+        monkeypatch.setenv("RORCH_PEER_TOKEN", "tok")
+        federation = daemon._build_federation()
+        assert federation is not None and federation.config.enabled
+
+    def test_refresh_publishes_non_personal_pool_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pool: PoolConfig
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.yml").write_text(self.CONFIG)
+        monkeypatch.setenv("RORCH_PEER_TOKEN", "tok")
+        federation = daemon._build_federation()
+        assert federation is not None
+        federation.fetch = MagicMock(side_effect=TimeoutError("down"))
+        personal = replace(pool, name="personal", repo="", scope="personal")
+        runtime = MagicMock(pools=[replace(pool, instance="orch")], federation=federation)
+        runtime.scaler.pool_counts.return_value = {
+            pool.name: {"running": 2, "busy": 1, "max_runners": 5},
+            "personal": {"running": 1, "busy": 0, "max_runners": 3},
+        }
+        runtime.docker.running_containers.return_value = ["a", "b"]
+        effective = MagicMock(pools=[pool, personal], max_total_runners=6)
+        daemon._refresh_federation(runtime, effective)
+        own = federation.own()
+        assert own is not None
+        assert own["instance"] == "orch" and own["global_free"] == 4
+        assert list(own["pools"]) == [pool.name]
+        state = daemon._host_state(runtime)
+        assert state["federation"]["peers"][0]["error"] == "down"
