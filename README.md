@@ -417,7 +417,7 @@ different agent, build locally; local images are tagged by version, and `gh-runn
 follows the newest:
 
 ```bash
-./scripts/build-runner.sh                          # newest → gh-runner:2.337.0 + gh-runner:latest
+./scripts/build-runner.sh                          # newest → gh-runner:2.338.2 + gh-runner:latest
 RUNNER_VERSION=2.328.0 ./scripts/build-runner.sh   # older  → gh-runner:2.328.0 only
 ```
 

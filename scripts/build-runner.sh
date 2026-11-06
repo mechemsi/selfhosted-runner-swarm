@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # Keep in step with the ARG default in runner-image/Dockerfile.
-readonly NEWEST="2.337.0"
+readonly NEWEST="2.338.2"
 readonly RUNNER_VERSION="${RUNNER_VERSION:-${NEWEST}}"
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly CONTEXT="${REPO_ROOT}/runner-image"

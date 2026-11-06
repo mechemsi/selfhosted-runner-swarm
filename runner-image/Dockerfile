@@ -133,7 +133,7 @@ LABEL rorch.docker_gid=runtime
 # Must be >= 2.327 for Node24-runtime actions (shivammathur/setup-php@v2 and
 # the current actions/* releases); older agents fail with
 # "'using: node24' is not supported".
-ARG RUNNER_VERSION=2.337.0
+ARG RUNNER_VERSION=2.338.2
 ENV RUNNER_VERSION=${RUNNER_VERSION}
 
 # Stamped so the orchestrator (and `docker image inspect`) can tell which agent
