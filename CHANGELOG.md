@@ -1,3 +1,9 @@
+## [1.5.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.0...v1.5.1) (2026-11-06)
+
+### Bug Fixes
+
+* **runner:** bump agent to 2.338.2 and keep one open audit issue ([#41](https://github.com/mechemsi/selfhosted-runner-swarm/issues/41)) ([b1dd9f1](https://github.com/mechemsi/selfhosted-runner-swarm/commit/b1dd9f15e9d76e0b0b501ad0a732dc81db672d5f)), closes [#31](https://github.com/mechemsi/selfhosted-runner-swarm/issues/31) [#35](https://github.com/mechemsi/selfhosted-runner-swarm/issues/35) [#37](https://github.com/mechemsi/selfhosted-runner-swarm/issues/37) [#37](https://github.com/mechemsi/selfhosted-runner-swarm/issues/37)
+
 ## [1.5.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.4.0...v1.5.0) (2026-11-06)
 
 ### Features
