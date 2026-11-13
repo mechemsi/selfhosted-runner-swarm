@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:22-bookworm-slim AS deps
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # npm ci when a lockfile is present, npm install to create one otherwise.
@@ -8,7 +8,7 @@ COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
     if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-FROM node:22-bookworm-slim AS build
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
@@ -17,7 +17,7 @@ COPY . .
 ARG RORCH_BUILD_VERSION=""
 RUN RORCH_BUILD_VERSION="${RORCH_BUILD_VERSION}" npm run build
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS runtime
 WORKDIR /app
 # The standalone server binds $HOSTNAME, which Docker sets to the container ID —
 # so it never listened on 127.0.0.1 and the HEALTHCHECK below always failed.
@@ -27,10 +27,9 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 # running the Docker socket.
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
-# The server is `node server.js`: the runtime never runs a package manager, but
-# the base image ships npm, corepack and yarn, and the npm copy was every
-# language-package finding in this image. Drop them, and pull the Debian
-# security updates the base tag has not picked up yet (libpcre2, ...).
+# The server is `node server.js`: the runtime never runs a package manager.
+# Remove any bundled package managers, and pull the Debian security updates
+# the base tag has not picked up yet (libpcre2, ...).
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
               /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
