@@ -8,7 +8,7 @@ stays hermetic. CI runs these with a MariaDB service container; locally:
 
     docker run -d --name rorch-mariadb -p 127.0.0.1:13306:3306 \\
       -e MARIADB_ROOT_PASSWORD=rootpw -e MARIADB_DATABASE=rorch \\
-      -e MARIADB_USER=rorch -e MARIADB_PASSWORD=rorchpw mariadb:11
+      -e MARIADB_USER=rorch -e MARIADB_PASSWORD=rorchpw mariadb:13
     RORCH_TEST_DB_URL=mysql://rorch:rorchpw@127.0.0.1:13306/rorch pytest tests/test_mariadb.py
 
 These exist because the dialect differences are exactly the kind that pass
