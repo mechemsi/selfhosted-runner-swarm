@@ -127,7 +127,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
           cache: pip
           cache-dependency-path: orchestrator/pyproject.toml
 
@@ -156,7 +156,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
           cache: pip
           cache-dependency-path: orchestrator/pyproject.toml
 
@@ -182,7 +182,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
 
       - name: Audit dependencies
         # Audit the declared runtime dependencies, not the installed
@@ -416,7 +416,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
           cache: pip
           cache-dependency-path: orchestrator/pyproject.toml
 

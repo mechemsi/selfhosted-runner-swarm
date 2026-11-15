@@ -21,7 +21,7 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 ```
 ┌─────────────────────┐
 │   Orchestrator      │     polls GitHub API
-│   (Python 3.12)     │◄──── every N seconds
+│   (Python 3.15)     │◄──── every N seconds
 │                     │
 │  ┌──────┐ ┌──────┐  │     spawns/kills containers
 │  │Pool 1│ │Pool 2│  │────► via Docker CLI
@@ -559,7 +559,7 @@ rorch/
 ├── .env.example             # Environment template
 ├── example.config.yml       # Pool config with examples
 ├── orchestrator/
-│   ├── Dockerfile           # Orchestrator image (python:3.12-slim)
+│   ├── Dockerfile           # Orchestrator image (python:3.15-slim)
 │   └── orchestrator.py      # Main application (~500 lines)
 └── runner-image/
     ├── Dockerfile           # Runner image (ubuntu:22.04 + actions-runner)
