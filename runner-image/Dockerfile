@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:22.10@sha256:e322f4808315c387868a9135beeb11435b5b83130a8599fd7d0014452c34f489
 
 # Keeps the orchestrator's `docker image prune -a` from deleting this image
 # while no runner container references it.
@@ -13,10 +13,9 @@ ARG NODE_VERSION=22.23.3
 ARG PYTHON_VERSION=3.11.12
 
 # Install dependencies + Docker CLI only (no daemon: uses the host socket).
-# `upgrade` first: the ubuntu:22.04 tag lags the security pocket (libssl3, ...),
-# and every release rebuilds from a fresh base, so this keeps each release on
-# the current patched 22.04 packages without changing the Ubuntu release.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+# Ubuntu 22.10 is EOL; its packages are only available in the frozen archive.
+RUN sed -i 's@archive.ubuntu.com@old-releases.ubuntu.com@g; s@security.ubuntu.com@old-releases.ubuntu.com@g' /etc/apt/sources.list \
+    && apt-get update && apt-get upgrade -y && apt-get install -y \
     curl \
     jq \
     git \
@@ -92,7 +91,7 @@ RUN apt-get update && apt-get install -y \
 # jobs need a C toolchain — Go's -race/cgo, node-gyp, Python C-extensions.
 
 # ── Make pre-staged Python 3.11 the default system python ───────────────────
-# Ubuntu 22.04 ships Python 3.10 which lacks datetime.UTC (3.11+).
+# Ubuntu 22.10 ships Python 3.10 which lacks datetime.UTC (3.11+).
 # Symlink the pre-staged 3.11 onto /usr/local/bin so it shadows /usr/bin/python3.
 RUN ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" /usr/local/bin/python3 \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" /usr/local/bin/python \
