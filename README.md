@@ -167,30 +167,6 @@ Code rolls back; the database schema does not. The store only ever creates table
 and indexes with `CREATE ... IF NOT EXISTS`, so an older orchestrator runs against a newer
 schema; check the release notes before rolling back across a release that says otherwise.
 
-### MariaDB 11 to 13
-
-Compose and CI use the same digest-pinned MariaDB 13 image. Before upgrading an
-existing installation, stop the orchestrator and dashboard, take and verify a
-full backup of `rorch-db` using MariaDB 11 tooling, then cleanly stop MariaDB.
-Do not remove the volume. Pull the new image and start the stack.
-`MARIADB_AUTO_UPGRADE=1` runs `mariadb-upgrade` on the existing data directory;
-wait for a healthy database and check its logs before resuming normal operation.
-The automatic system-table backup does not replace a full database backup.
-To roll back the database major version, restore the pre-upgrade backup with the
-old image rather than attaching MariaDB 11 to the upgraded volume.
-
-The [major-version upgrade guide](https://mariadb.com/docs/server/server-management/install-and-upgrade-mariadb/upgrading/platform-specific-upgrade-guides/upgrading-on-linux/upgrading-between-major-mariadb-versions)
-supports a direct upgrade. Reviewed the [11.8 to 12.3 migration guide](https://mariadb.com/docs/server/server-management/install-and-upgrade-mariadb/upgrading/mariadb-community-server-upgrade-paths/upgrading-from-mariadb-11-8-to-mariadb-12-3),
-the [12.0 changelog](https://mariadb.com/docs/release-notes/community-server/changelogs/12.0/12.0.2)
-and [13.0 changelog](https://mariadb.com/docs/release-notes/community-server/changelogs/13.0/13.0.2),
-plus the [13.0 compatibility notes](https://mariadb.com/docs/release-notes/community-server/13.0/mariadb-13.0-changes-and-improvements).
-No dedicated 12.3 to 13.0 migration guide was available; the general upgrade
-procedure above applies. MariaDB 13 changes replication and audit metadata and
-adds optional InnoDB log archiving, none of which this stack configures.
-The store uses none of the removed server options or new reserved identifiers
-(`CONVERSION`, `TO_DATE`), and has no replication or Galera configuration.
-Its PyMySQL connection, InnoDB schema and upserts require no SQL changes.
-
 ## Dashboard
 
 The orchestrator serves a web dashboard and JSON API on `127.0.0.1:8080`.
