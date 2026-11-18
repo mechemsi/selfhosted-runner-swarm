@@ -59,7 +59,7 @@ RUNTIME_GID = "runtime"
 
 # The runner agent's work dir: checkouts, node_modules and build output. Mounted
 # as tmpfs (pool.work_tmpfs_size) so CI churn stays off the host disk. Owned by
-# the image's `runner` user, the first account useradd creates on ubuntu:22.04.
+# the image's `runner` user, assigned uid/gid 1000 in the runner Dockerfile.
 RUNNER_WORK_DIR = "/home/runner/actions-runner/_work"
 RUNNER_UID = 1000
 RUNNER_GID = 1000
