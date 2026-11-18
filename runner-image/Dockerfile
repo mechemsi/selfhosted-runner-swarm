@@ -1,4 +1,4 @@
-FROM ubuntu:22.10@sha256:e322f4808315c387868a9135beeb11435b5b83130a8599fd7d0014452c34f489
+FROM ubuntu:26.10@sha256:c4ca31b6e93261c5dd773826f789738a49e414ca04fc094b1ccd0f91e07329a2
 
 # Keeps the orchestrator's `docker image prune -a` from deleting this image
 # while no runner container references it.
@@ -13,9 +13,7 @@ ARG NODE_VERSION=22.23.3
 ARG PYTHON_VERSION=3.11.12
 
 # Install dependencies + Docker CLI only (no daemon: uses the host socket).
-# Ubuntu 22.10 is EOL; its packages are only available in the frozen archive.
-RUN sed -i 's@archive.ubuntu.com@old-releases.ubuntu.com@g; s@security.ubuntu.com@old-releases.ubuntu.com@g' /etc/apt/sources.list \
-    && apt-get update && apt-get upgrade -y && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     curl \
     jq \
     git \
@@ -72,16 +70,23 @@ RUN ln -sf "/opt/toolcache-staging/node/${NODE_VERSION}/x64/bin/node" /usr/local
 
 # ── Pre-stage Python for actions/setup-python ────────────────────────────────
 # Build minimal Python from source into toolcache layout.
+# OpenSSL 4 makes ASN1_STRING opaque. Use the public accessors in Python 3.11.
 RUN apt-get update && apt-get install -y \
         build-essential zlib1g-dev libffi-dev libssl-dev \
         libbz2-dev libreadline-dev libsqlite3-dev liblzma-dev \
     && curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
        | tar -xJ -C /tmp \
     && cd "/tmp/Python-${PYTHON_VERSION}" \
+    && sed -i \
+        -e 's/name->d.ip->length/ASN1_STRING_length(name->d.ip)/g' \
+        -e 's/unsigned char \*p = name->d.ip->data/const unsigned char *p = ASN1_STRING_get0_data(name->d.ip)/g' \
+        -e 's/(char \*)uri->data/(const char *)ASN1_STRING_get0_data(uri)/g' \
+        -e 's/uri->length/ASN1_STRING_length(uri)/g' Modules/_ssl.c \
     && ./configure --prefix="/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64" \
                    --enable-optimizations --with-lto --with-ensurepip=install \
     && make -j"$(nproc)" \
     && make install \
+    && "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" -c "import _hashlib, ssl" \
     && ln -sf pip3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip" \
     && ln -sf python3 "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" \
     && rm -rf "/tmp/Python-${PYTHON_VERSION}" \
@@ -91,8 +96,7 @@ RUN apt-get update && apt-get install -y \
 # jobs need a C toolchain — Go's -race/cgo, node-gyp, Python C-extensions.
 
 # ── Make pre-staged Python 3.11 the default system python ───────────────────
-# Ubuntu 22.10 ships Python 3.10 which lacks datetime.UTC (3.11+).
-# Symlink the pre-staged 3.11 onto /usr/local/bin so it shadows /usr/bin/python3.
+# Symlink the pre-staged 3.11 into /usr/local/bin to keep the default for jobs.
 RUN ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python3" /usr/local/bin/python3 \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/python" /usr/local/bin/python \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pip3" /usr/local/bin/pip3 \
@@ -116,7 +120,10 @@ RUN /usr/local/bin/pip install --no-cache-dir "setuptools==80.10.2" \
 # reads it from /var/run/docker.sock at start (as root), adds `runner` to a group
 # with that GID and drops to `runner`. One published image works on every host;
 # rorch.docker_gid=runtime tells the orchestrator not to rebuild it per host.
-RUN useradd -m -s /bin/bash runner \
+# The base image reserves uid/gid 1000 for its default ubuntu account.
+RUN userdel --remove ubuntu \
+    && useradd --uid 1000 --user-group -m -s /bin/bash runner \
+    && test "$(id -g runner)" -eq 1000 \
     && usermod -aG sudo runner \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 LABEL rorch.docker_gid=runtime

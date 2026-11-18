@@ -32,11 +32,11 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
          │
 ┌────────┴────────┐
 │  Runner containers  │   ephemeral, one job each
-│  (Ubuntu 22.10)     │   auto-register + deregister
+│  (Ubuntu 26.10)     │   auto-register + deregister
 └─────────────────────┘
 ```
 
-The runner base, Ubuntu 22.10, [reached end of life in July 2023](https://lists.ubuntu.com/archives/ubuntu-announce/2023-July/000293.html). Its APT sources use the frozen `old-releases.ubuntu.com` archive and receive no further Ubuntu security updates.
+The runner image uses Ubuntu 26.10 and its standard APT and security repositories.
 
 ## Prerequisites
 
@@ -540,7 +540,7 @@ rorch/
 │   ├── Dockerfile           # Orchestrator image (python:3.15-slim)
 │   └── orchestrator.py      # Main application (~500 lines)
 └── runner-image/
-    ├── Dockerfile           # Runner image (ubuntu:22.10 + actions-runner)
+    ├── Dockerfile           # Runner image (ubuntu:26.10 + actions-runner)
     └── entrypoint.sh        # Registration and lifecycle script
 ```
 
