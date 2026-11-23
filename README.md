@@ -32,11 +32,11 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
          │
 ┌────────┴────────┐
 │  Runner containers  │   ephemeral, one job each
-│  (Ubuntu 26.10)     │   auto-register + deregister
+│  (Ubuntu 26.04)     │   auto-register + deregister
 └─────────────────────┘
 ```
 
-The runner image uses Ubuntu 26.10 and its standard APT and security repositories.
+The runner image uses Ubuntu 26.04 LTS and its standard APT and security repositories, plus deb.sury.org for PHP.
 
 ## Prerequisites
 
@@ -441,6 +441,26 @@ never built locally.
 > `'using: node24' is not supported`. CI asserts this on every image build, and a weekly
 > job opens an issue when upstream moves ahead of the pinned version.
 
+### PHP in the runner image
+
+`shivammathur/setup-php` on a self-hosted runner installs PHP with apt from the ondrej/php
+PPA on Launchpad, in every job, because every runner is a fresh container. When Launchpad
+is slow that one step takes 25 minutes. The runner image therefore ships PHP 8.3, 8.4 and
+8.5 (default 8.4) from deb.sury.org, the same builds, with setup-php's own package set and
+the extensions our workflows request (amqp, bcmath, curl, gd, gmp, igbinary, intl,
+mbstring, mysql, opcache, pgsql, redis, soap, sqlite3, xml, zip; pcov and xdebug installed
+but off until a job sets `coverage:`). setup-php finds the requested version installed and
+reports `Switched to PHP x.y.z` or `Found PHP x.y.z` without touching apt. Workflows need
+no change, but must not set `update: true`, which installs the newest PHP again in every
+job. Anything not baked in (another series or extension) still installs, from deb.sury.org.
+
+`runner-image/php-versions` names the minimum patch release per series; the build fails if
+it gets an older one. `.github/workflows/php-refresh.yml` checks deb.sury.org daily and,
+when a newer patch release is out, commits the bump to `main` as `fix(runner): PHP ...`
+and starts CI, so a PHP security release becomes a rorch patch release on its own. The
+hosts take it like any release (*Deploy a release*). `./scripts/php-versions.sh check`
+shows pinned against newest.
+
 ### Which repositories a pool covers
 
 `scope: personal` and org-level pools discover repositories automatically. Two settings
@@ -540,7 +560,9 @@ rorch/
 │   ├── Dockerfile           # Orchestrator image (python:3.15-slim)
 │   └── orchestrator.py      # Main application (~500 lines)
 └── runner-image/
-    ├── Dockerfile           # Runner image (ubuntu:26.10 + actions-runner)
+    ├── Dockerfile           # Runner image (ubuntu:26.04 LTS + actions-runner + PHP)
+    ├── install-php.sh       # Bakes PHP for setup-php (see "PHP in the runner image")
+    ├── php-versions         # Minimum PHP patch release per series
     └── entrypoint.sh        # Registration and lifecycle script
 ```
 

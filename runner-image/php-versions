@@ -1,0 +1,10 @@
+# PHP releases baked into the runner image (install-php.sh), one per series.
+# Each line is the minimum patch release the build accepts; the build installs
+# the newest one deb.sury.org has for the image's Ubuntu release.
+#
+# .github/workflows/php-refresh.yml bumps these when sury publishes a newer
+# patch release. Its fix(runner) commit makes the next rorch release, so every
+# PHP security release reaches the runners with a rorch patch version.
+8.3.37
+8.4.28
+8.5.13

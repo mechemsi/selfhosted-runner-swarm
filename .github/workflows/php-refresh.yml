@@ -1,0 +1,60 @@
+name: PHP refresh
+
+# The runner image bakes PHP (runner-image/install-php.sh) so setup-php never
+# installs it per job. That makes PHP security releases this repo's job: when
+# deb.sury.org publishes a newer patch release than runner-image/php-versions
+# names, this bumps the file on main with a fix(runner) commit and starts CI on
+# it. CI's success starts release.yml, which cuts a rorch patch release whose
+# runner image carries the new PHP. Hosts take it with the usual RORCH_VERSION
+# bump (README "Versioning, deploy and rollback").
+#
+# A push made with GITHUB_TOKEN starts no workflows, so CI is started with
+# workflow_dispatch, the event GITHUB_TOKEN is allowed to trigger.
+#
+# GitHub-hosted only: this repository is public (see ci.yml repo-rules).
+
+on:
+  schedule:
+    - cron: "41 4 * * *"   # daily 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-refresh
+  cancel-in-progress: false
+
+jobs:
+  php-refresh:
+    name: php-refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write        # the bump commit on main
+      actions: write         # start CI on it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+
+      - name: Newest PHP patch releases on deb.sury.org
+        id: bump
+        run: ./scripts/php-versions.sh bump >> "$GITHUB_OUTPUT"
+
+      - name: Commit the bump and start CI
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git add runner-image/php-versions
+          git commit -m "fix(runner): PHP $SUMMARY" \
+            -m "deb.sury.org published newer PHP patch releases; the runner image bakes them in at the next release."
+          git push origin HEAD:main
+          gh workflow run ci.yml --ref main
+          echo "::notice::bumped PHP to $SUMMARY, CI started on main"
