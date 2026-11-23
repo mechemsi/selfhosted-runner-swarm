@@ -22,15 +22,21 @@
 # setup-php writes, so it recognises the repository instead of adding a
 # duplicate.
 #
-# Usage: install-php.sh <php-versions file>
+# The repository key is vendored (sury-php.asc, next to this script), not
+# downloaded: apt trusts every key in the keyring, so the keyring holds exactly
+# the one pinned key and the build checks that before using it.
+#
+# Usage: install-php.sh <php-versions file> <sury-php.asc>
 
 set -euo pipefail
 
 readonly LOCK="$1"
+readonly KEY_ASC="$2"
 readonly DEFAULT_SERIES="8.4"
 readonly SURY="https://packages.sury.org/php/"
 readonly KEYRING="/usr/share/keyrings/ondrej-php-keyring.gpg"
-# DEB.SURY.ORG Automatic Signing Key
+# DEB.SURY.ORG Automatic Signing Key <deb@sury.org>, expires 2028-02-04.
+# Same value in scripts/php-versions.sh.
 readonly SURY_FPR="15058500A0235D97F5D10063B188E2B695BD4743"
 
 # setup-php's own package set, then the extensions the repositories on these
@@ -46,11 +52,12 @@ readonly HELPER_PACKAGES="apt-transport-https ca-certificates curl file make jq 
 # shellcheck source=/dev/null
 codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
 
-curl -fsSL "${SURY}apt.gpg" -o "$KEYRING"
-gpg --show-keys --with-colons "$KEYRING" | grep -q "^fpr:*${SURY_FPR}:" || {
-    echo "ERROR: ${SURY}apt.gpg is not the deb.sury.org key ${SURY_FPR}" >&2
+gpg --dearmor < "$KEY_ASC" > "$KEYRING"
+primaries="$(gpg --show-keys --with-colons "$KEYRING" | awk -F: '$1 == "pub" { getline; print $10 }')"
+if [[ "$primaries" != "$SURY_FPR" ]]; then
+    echo "ERROR: $KEY_ASC must hold exactly the deb.sury.org key ${SURY_FPR}, has: ${primaries//$'\n'/ }" >&2
     exit 1
-}
+fi
 cat > "/etc/apt/sources.list.d/ondrej-ubuntu-php-${codename}.sources" <<EOF
 Types: deb
 URIs: ${SURY}

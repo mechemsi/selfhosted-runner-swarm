@@ -455,9 +455,10 @@ no change, but must not set `update: true`, which installs the newest PHP again 
 job. Anything not baked in (another series or extension) still installs, from deb.sury.org.
 
 `runner-image/php-versions` names the minimum patch release per series; the build fails if
-it gets an older one. `.github/workflows/php-refresh.yml` checks deb.sury.org daily and,
-when a newer patch release is out, commits the bump to `main` as `fix(runner): PHP ...`
-and starts CI, so a PHP security release becomes a rorch patch release on its own. The
+it gets an older one. `.github/workflows/php-refresh.yml` checks deb.sury.org daily (its signed `InRelease`,
+verified against the vendored key `runner-image/sury-php.asc`) and, when a newer patch
+release is out, opens a `fix(runner): PHP ...` PR, runs CI on it, merges it when green and
+runs CI on `main`, so a PHP security release becomes a rorch patch release on its own. The
 hosts take it like any release (*Deploy a release*). `./scripts/php-versions.sh check`
 shows pinned against newest.
 
@@ -563,6 +564,7 @@ rorch/
     ├── Dockerfile           # Runner image (ubuntu:26.04 LTS + actions-runner + PHP)
     ├── install-php.sh       # Bakes PHP for setup-php (see "PHP in the runner image")
     ├── php-versions         # Minimum PHP patch release per series
+    ├── sury-php.asc         # deb.sury.org signing key (only that key)
     └── entrypoint.sh        # Registration and lifecycle script
 ```
 

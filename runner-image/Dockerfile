@@ -122,8 +122,8 @@ RUN /usr/local/bin/pip install --no-cache-dir "setuptools==80.10.2" \
 # them installed and skips apt (it took 25 minutes per job from Launchpad on
 # 2026-11-23). See install-php.sh. php-versions is copied first so a PHP patch
 # bump rebuilds this layer instead of reusing the cached, older PHP.
-COPY php-versions install-php.sh /tmp/php/
-RUN bash /tmp/php/install-php.sh /tmp/php/php-versions && rm -rf /tmp/php
+COPY php-versions install-php.sh sury-php.asc /tmp/php/
+RUN bash /tmp/php/install-php.sh /tmp/php/php-versions /tmp/php/sury-php.asc && rm -rf /tmp/php
 
 # Create runner user. uid/gid 1000: the orchestrator's tmpfs work dir is
 # mounted with uid=1000,gid=1000 (docker_client.RUNNER_UID).
