@@ -1,0 +1,112 @@
+name: PHP refresh
+
+# The runner image bakes PHP (runner-image/install-php.sh) so setup-php never
+# installs it per job. That makes PHP security releases this repo's job: when
+# deb.sury.org publishes a newer patch release than runner-image/php-versions
+# names, this opens a fix(runner) PR with the bump, runs CI on it, squash-merges
+# it when CI is green and runs CI on main. CI's success on main starts
+# release.yml, which cuts a rorch patch release whose runner image carries the
+# new PHP. Hosts take it with the usual RORCH_VERSION bump (README "Deploy a
+# release"). The versions come from sury's signed index (scripts/php-versions.sh
+# checks InRelease against the vendored key and the Packages.gz hash).
+#
+# GITHUB_TOKEN pushes and PRs start no workflows, so CI is started with
+# workflow_dispatch, the event GITHUB_TOKEN is allowed to trigger, once on the
+# PR branch and once on main after the merge. The PR needs the repository
+# setting "Allow GitHub Actions to create and approve pull requests".
+#
+# GitHub-hosted only: this repository is public (see ci.yml repo-rules).
+
+on:
+  schedule:
+    - cron: "41 4 * * *"   # daily 04:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-refresh
+  cancel-in-progress: false
+
+jobs:
+  php-refresh:
+    name: php-refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write        # bump branch and the squash merge
+      pull-requests: write   # open the PR
+      actions: write         # start CI on the branch and on main
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+
+      - name: Newest PHP patch releases on deb.sury.org
+        id: bump
+        run: ./scripts/php-versions.sh bump >> "$GITHUB_OUTPUT"
+
+      - name: Open the bump PR
+        id: pr
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          branch="auto/php-$(echo "$SUMMARY" | tr -c '0-9.\n' '-')"
+          title="fix(runner): PHP $SUMMARY"
+          # Only a PR from this repository counts: a fork can open a PR with the
+          # same head branch name, and that must not stand in for the real one.
+          own_pr() {
+            gh pr list --head "$branch" --state open --json number,isCrossRepository \
+              --jq 'map(select(.isCrossRepository | not))[0].number // empty'
+          }
+          number=$(own_pr)
+          if [ -n "$number" ] && git ls-remote --exit-code origin "refs/heads/$branch" > /dev/null; then
+            echo "::notice::$branch already has PR #$number"
+          else
+            git switch -c "$branch"
+            git add runner-image/php-versions
+            git commit -m "$title" \
+              -m "deb.sury.org published newer PHP patch releases; the runner image bakes them in at the next release."
+            git push --force origin "$branch"
+            [ -n "$number" ] || gh pr create --base main --head "$branch" --title "$title" \
+              --body "Automated by php-refresh.yml: newer PHP patch releases on deb.sury.org (signed index). Merged by the same workflow when CI on this branch is green."
+            number=$(own_pr)
+          fi
+          [[ "$number" =~ ^[0-9]+$ ]] || { echo "::error::no PR from this repository for $branch"; exit 1; }
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: CI on the branch, merge when green, CI on main
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          run_ci() {
+            local ref=$1 before id
+            before=$(gh run list --workflow ci.yml --branch "$ref" --event workflow_dispatch -L 1 --json databaseId --jq '.[0].databaseId // 0')
+            gh workflow run ci.yml --ref "$ref"
+            for _ in $(seq 30); do
+              sleep 10
+              id=$(gh run list --workflow ci.yml --branch "$ref" --event workflow_dispatch -L 1 --json databaseId --jq '.[0].databaseId // 0')
+              [ "$id" != "$before" ] && break
+            done
+            [ "$id" != "$before" ] || { echo "::error::CI on $ref did not start"; return 1; }
+            gh run watch "$id" --exit-status --interval 30 > /dev/null
+          }
+          # Merge exactly the commit CI tested.
+          head=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          run_ci "$BRANCH" || { echo "::error::CI failed on $BRANCH; PR left open for a person"; exit 1; }
+          gh pr merge "$NUMBER" --squash --delete-branch --match-head-commit "$head"
+          run_ci main
+          echo "::notice::merged $BRANCH; CI on main starts the release"

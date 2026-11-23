@@ -1,4 +1,8 @@
-FROM ubuntu:26.10@sha256:1c2a84ae3f2a24aeb97cded5b41f0211b441662f1a188cbd2e139e7625f6f1d6
+# Stay on an Ubuntu LTS. The PHP packages baked in below (deb.sury.org, the
+# same builds as the ondrej/php PPA) exist only for LTS releases: 26.10
+# "stonking" has no PHP repository at all, so shivammathur/setup-php could not
+# install PHP on it. Move to the next LTS (28.04) once sury publishes it.
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 # Keeps the orchestrator's `docker image prune -a` from deleting this image
 # while no runner container references it.
@@ -112,6 +116,14 @@ RUN /usr/local/bin/pip install --no-cache-dir "setuptools==80.10.2" \
     && /usr/local/bin/pip install --no-cache-dir ruff pyright \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/ruff" /usr/local/bin/ruff \
     && ln -sf "/opt/toolcache-staging/Python/${PYTHON_VERSION}/x64/bin/pyright" /usr/local/bin/pyright
+
+# ── PHP for shivammathur/setup-php ───────────────────────────────────────────
+# PHP 8.3, 8.4 and 8.5 with the extensions our workflows use, so setup-php finds
+# them installed and skips apt (it took 25 minutes per job from Launchpad on
+# 2026-11-23). See install-php.sh. php-versions is copied first so a PHP patch
+# bump rebuilds this layer instead of reusing the cached, older PHP.
+COPY php-versions install-php.sh sury-php.asc /tmp/php/
+RUN bash /tmp/php/install-php.sh /tmp/php/php-versions /tmp/php/sury-php.asc && rm -rf /tmp/php
 
 # Create runner user. uid/gid 1000: the orchestrator's tmpfs work dir is
 # mounted with uid=1000,gid=1000 (docker_client.RUNNER_UID).

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # php-refresh.yml starts CI on its PHP bump commit this way: a push made with
+  # GITHUB_TOKEN starts no workflows, a workflow_dispatch does.
+  workflow_dispatch:
 
 permissions:
   contents: read
