@@ -1,3 +1,13 @@
+## [1.5.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.1...v1.5.2) (2026-11-23)
+
+### Bug Fixes
+
+* **runner:** bake PHP into the runner image, back on Ubuntu 26.04 LTS ([#53](https://github.com/mechemsi/selfhosted-runner-swarm/issues/53)) ([c926f2a](https://github.com/mechemsi/selfhosted-runner-swarm/commit/c926f2aa51f888c63427ed156835c2f73658ec21))
+
+### Reverts
+
+* **deps:** mariadb 13 -> 11 (database majors are prepared, not merged) ([#50](https://github.com/mechemsi/selfhosted-runner-swarm/issues/50)) ([83a0225](https://github.com/mechemsi/selfhosted-runner-swarm/commit/83a0225ce1708f58248223997683b7c2f887faf9))
+
 ## [1.5.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.0...v1.5.1) (2026-11-06)
 
 ### Bug Fixes
