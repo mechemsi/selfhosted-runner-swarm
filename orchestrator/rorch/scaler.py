@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from rorch.config import PoolConfig
-from rorch.errors import GitHubRateLimitError
+from rorch.errors import DockerInventoryError, GitHubRateLimitError
 from rorch.federation import Federation
 from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
 from rorch.store import (
@@ -157,7 +157,11 @@ class PoolScaler:
         with self._cap_lock:
             cap = self._max_total_runners
             if cap > 0:
-                total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+                try:
+                    total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+                except DockerInventoryError as error:
+                    log.warning("[%s] Provisioning deferred: %s", pool_name, error)
+                    return 0
                 headroom = max(0, cap - total - self._reserved_spawns)
                 if to_spawn > headroom:
                     log.warning(
@@ -242,6 +246,9 @@ class PoolScaler:
         if draining:
             log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
             capacity = 0
+        elif total_running is None:
+            log.warning("[%s] Provisioning deferred: personal pool inventory is unknown", pool.name)
+            capacity = 0
         else:
             # Reserve only what some repository actually needs: a reservation
             # is headroom every other pool loses until the spawns finish.
@@ -275,10 +282,10 @@ class PoolScaler:
         ]
         total_to_spawn = sum(count for _, count in spawn_allocations)
         log.info(
-            "[%s] personal pool | repos=%d containers=%d/%d spawning=%d",
+            "[%s] personal pool | repos=%d containers=%s/%d spawning=%d",
             pool.name,
             len(inspections),
-            total_running,
+            "unknown" if total_running is None else total_running,
             pool.max_runners,
             total_to_spawn,
         )
@@ -290,20 +297,23 @@ class PoolScaler:
 
     def _inspect_pools_parallel(
         self, pools: list[PoolConfig], max_workers: int
-    ) -> tuple[list[PoolInspection], int]:
+    ) -> tuple[list[PoolInspection], int | None]:
         with ThreadPoolExecutor(
             max_workers=min(max_workers, len(pools)),
             thread_name_prefix="repo-check",
         ) as executor:
             results = list(executor.map(self._inspect_repository, pools))
         inspections = [inspection for inspection, _ in results if inspection is not None]
-        return inspections, sum(running for _, running in results)
+        running_counts = [running for _, running in results if running is not None]
+        total_running = sum(running_counts) if len(running_counts) == len(results) else None
+        return inspections, total_running
 
-    def _inspect_repository(self, pool: PoolConfig) -> tuple[PoolInspection | None, int]:
-        running_names: set[str] = set()
+    def _inspect_repository(self, pool: PoolConfig) -> tuple[PoolInspection | None, int | None]:
+        running_count: int | None = None
         try:
             running_names = set(self._docker.running_containers(pool.container_prefix))
-            return self._inspect_pool(pool, running_names), len(running_names)
+            running_count = len(running_names)
+            return self._inspect_pool(pool, running_names), running_count
         except GitHubRateLimitError:
             # Every repository in the personal pool uses this token.
             raise
@@ -317,8 +327,7 @@ class PoolScaler:
                 pool=pool.name,
                 reason=f"{pool.display}: see orchestrator logs for the inspection error",
             )
-            # Its runners still count against the parent pool's ceiling.
-            return None, len(running_names)
+            return None, running_count
 
     def _inspect_pool(
         self, pool: PoolConfig, running_names: set[str], *, federated: bool = False

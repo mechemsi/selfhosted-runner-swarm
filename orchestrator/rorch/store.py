@@ -207,6 +207,18 @@ class Store:
         )
         return [dict(row) for row in rows]
 
+    def dashboard_events(self, limit: int) -> list[dict[str, Any]]:
+        """Keep the latest copy of each inspection failure in the dashboard feed."""
+        failure = EVENT_REPOSITORY_INSPECTION_FAILED
+        rows = self._read(
+            "SELECT ts, pool, container, event, reason FROM runner_events"
+            " WHERE event <> ? OR id IN ("
+            "SELECT MAX(id) FROM runner_events WHERE event = ? GROUP BY pool, reason"
+            ") ORDER BY id DESC LIMIT ?",
+            (failure, failure, limit),
+        )
+        return [dict(row) for row in rows]
+
     def latest_snapshots(self) -> dict[str, dict[str, Any]]:
         """Most recent snapshot per pool."""
         rows = self._read(

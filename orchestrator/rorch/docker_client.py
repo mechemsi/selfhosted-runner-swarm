@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from rorch.config import PoolConfig
+from rorch.errors import DockerInventoryError
 from rorch.protocols import ContainerInfo
 from rorch.store import (
     EVENT_AGED_KILL,
@@ -201,17 +202,18 @@ class DockerClient:
         return subprocess.run(cmd).returncode
 
     def running_containers(self, prefix: str) -> list[str]:
-        """List names of running containers matching the prefix."""
-        out, _ = self._capture(
-            [
-                "ps",
-                "--filter",
-                f"name=^{prefix}-",
-                "--format",
-                "{{.Names}}",
-            ]
-        )
-        return [n for n in out.split("\n") if n] if out else []
+        """List running containers, raising when Docker cannot confirm the inventory."""
+        try:
+            out, code = self._capture(
+                ["ps", "--filter", f"name=^{prefix}-", "--format", "{{.Names}}"]
+            )
+        except OSError as error:
+            raise DockerInventoryError(f"failed to list running containers for {prefix}") from error
+        if code:
+            raise DockerInventoryError(
+                f"failed to list running containers for {prefix} (docker ps exited {code})"
+            )
+        return [name for name in out.splitlines() if name]
 
     def container_details(self, prefix: str) -> list[ContainerInfo]:
         """Running containers with the detail the dashboard renders."""
@@ -252,7 +254,12 @@ class DockerClient:
             return True
         # `docker rm` on a container that no longer exists is the desired end
         # state, so report success rather than making callers special-case it.
-        if name not in self.running_containers(name.rsplit("-", 1)[0]):
+        try:
+            running = self.running_containers(name.rsplit("-", 1)[0])
+        except DockerInventoryError:
+            log.warning("Could not verify removal of %s", name, exc_info=True)
+            return False
+        if name not in running:
             log.info("  ⏹  %s already gone", name)
             return True
         log.warning("  ✗  Could not stop %s", name)

@@ -4,6 +4,10 @@
 """Typed operational errors shared across orchestrator boundaries."""
 
 
+class DockerInventoryError(RuntimeError):
+    """Docker could not confirm which runner containers are running."""
+
+
 class GitHubRateLimitError(RuntimeError):
     """GitHub requested that this token stop until a specific time."""
 

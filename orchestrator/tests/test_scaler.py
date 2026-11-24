@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from rorch.config import PoolConfig
-from rorch.errors import GitHubRateLimitError
+from rorch.errors import DockerInventoryError, GitHubRateLimitError
 from rorch.federation import Federation, FederationConfig, PeerConfig
 from rorch.protocols import JobInfo, RunnerInfo
 from rorch.scaler import PoolScaler
@@ -246,6 +246,34 @@ class TestPersonalAccountScaling:
         assert failed_repo.display in caplog.text
         assert "skipping scaling" not in caplog.text
 
+    def test_unknown_repository_inventory_blocks_provisioning_but_allows_cleanup(
+        self,
+        mock_github: MagicMock,
+        mock_docker: MagicMock,
+        personal_pool: PoolConfig,
+    ) -> None:
+        failed_repo = personal_pool.for_repository("alpha")
+        healthy_repo = personal_pool.for_repository("beta")
+        mock_github.list_repositories.return_value = ["alpha", "beta"]
+        mock_github.list_runners.return_value = [
+            RunnerInfo(
+                id=7, name=f"{healthy_repo.container_prefix}-old", status="offline", busy=False
+            )
+        ]
+        mock_github.get_queued_count.return_value = 1
+
+        def running(prefix: str) -> list[str]:
+            if prefix == failed_repo.container_prefix:
+                raise RuntimeError("docker ps failed")
+            return []
+
+        mock_docker.running_containers.side_effect = running
+
+        PoolScaler(mock_github, mock_docker).tick(personal_pool)
+
+        mock_github.deregister_runner.assert_called_once_with(healthy_repo, 7)
+        mock_docker.spawn_runner.assert_not_called()
+
     def test_runs_removal_and_provisioning_in_parallel(
         self,
         mock_github: MagicMock,
@@ -457,6 +485,23 @@ class TestGlobalRunnerCap:
         PoolScaler(mock_github, mock_docker).tick(pool)
 
         assert mock_docker.spawn_runner.call_count == 3
+
+    def test_unknown_global_inventory_blocks_provisioning(
+        self, mock_github: MagicMock, mock_docker: MagicMock, pool: PoolConfig
+    ) -> None:
+        mock_github.list_runners.return_value = []
+        mock_github.get_queued_count.return_value = 1
+
+        def running(prefix: str) -> list[str]:
+            if prefix == "gh-runner":
+                raise DockerInventoryError("docker ps failed")
+            return []
+
+        mock_docker.running_containers.side_effect = running
+
+        PoolScaler(mock_github, mock_docker, max_total_runners=4).tick(pool)
+
+        mock_docker.spawn_runner.assert_not_called()
 
     def test_caps_personal_pool_capacity(
         self, mock_github: MagicMock, mock_docker: MagicMock, personal_pool: PoolConfig
