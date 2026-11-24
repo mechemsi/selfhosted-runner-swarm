@@ -4,6 +4,7 @@
 """GitHub API client for runner management."""
 
 import hashlib
+import http.client
 import json
 import logging
 import math
@@ -12,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Self
@@ -32,11 +33,17 @@ DEFAULT_MAX_CONCURRENT_REQUESTS = 8
 # behind a concurrency group or while GitHub has not started it yet) while its jobs are
 # already "queued" for a self-hosted label; leaving it out stranded those jobs forever.
 _ACTIVE_RUN_STATUSES = ("queued", "pending", "in_progress")
+_QUEUE_PAGE_SIZE = 50
+_RETRYABLE_READ_STATUS = {408, 500, 502, 503, 504}
 # Pools on one repository (CI, heavy, deploy, main lanes) tick together and used to scan it
 # once each. A scan response younger than this is reused, so the repo costs one scan per tick
 # however many pools serve it; each pool still applies its own label filter.
 SHARED_SCAN_SECONDS = 10.0
 MAX_SHARED_SCAN_ENTRIES = 512
+
+
+class _TransientReadError(RuntimeError):
+    """A failed GitHub read that can be retried."""
 
 
 @dataclass(frozen=True)
@@ -181,6 +188,8 @@ class GitHubClient:
                         retry_at, reason = self._rate_limit_retry(token_key, error, text)
                         self._block_token(token_key, retry_at, reason)
                     raise GitHubRateLimitError(retry_at, reason) from error
+                if method == "GET" and error.code in _RETRYABLE_READ_STATUS:
+                    raise _TransientReadError(f"HTTP {error.code}: {text[:200]}") from error
 
                 log.error(
                     "GitHub API %s %d: %s — %s",
@@ -193,6 +202,16 @@ class GitHubClient:
             except GitHubRateLimitError:
                 raise
             except Exception as error:
+                if method == "GET" and isinstance(
+                    error,
+                    (
+                        urllib.error.URLError,
+                        TimeoutError,
+                        ConnectionError,
+                        http.client.IncompleteRead,
+                    ),
+                ):
+                    raise _TransientReadError(str(error) or type(error).__name__) from error
                 log.error("GitHub %s request failed: %s", method, error)
                 return None
 
@@ -319,8 +338,16 @@ class GitHubClient:
         except (TypeError, ValueError):
             return None
 
-    def _get(self, pat: str, path: str) -> Any | None:
-        return self._request(pat, path, "GET")
+    def _get(self, pat: str, path: str, *, api_version: str | None = None) -> Any | None:
+        for delay in (1.0, 2.0, None):
+            try:
+                return self._request(pat, path, "GET", api_version=api_version)
+            except _TransientReadError as error:
+                if delay is None:
+                    log.error("GitHub GET %s failed after retries: %s", path, error)
+                    return None
+                log.warning("GitHub GET %s failed, retrying in %gs: %s", path, delay, error)
+                self._sleep(delay)
 
     def _get_shared(self, pat: str, path: str) -> Any | None:
         """GET a scan response, reusing one fetched under SHARED_SCAN_SECONDS ago.
@@ -482,13 +509,11 @@ class GitHubClient:
             runs_path += f"/workflows/{pool.main_workflow.rsplit('/', 1)[-1]}"
             filters = "&branch=main&event=push"
         for status in _ACTIVE_RUN_STATUSES:
-            runs_data = self._get_shared(
-                pool.pat, f"{runs_path}/runs?status={status}&per_page=50{filters}"
-            )
-            if runs_data is None:
-                scan += QueueScan(failed=1)
-                continue
-            for run in runs_data.get("workflow_runs", []):
+            path = f"{runs_path}/runs?status={status}&per_page={_QUEUE_PAGE_SIZE}{filters}"
+            for run in self._queue_records(pool.pat, path, "workflow_runs"):
+                if run is None:
+                    scan += QueueScan(failed=1)
+                    break
                 # A run can change status between two listings; count its jobs once.
                 if run["id"] in seen:
                     continue
@@ -499,14 +524,16 @@ class GitHubClient:
     def _scan_run(
         self, pool: PoolConfig, repo: str, run: dict[str, Any], jobs: list[JobInfo] | None
     ) -> QueueScan:
-        jobs_data = self._get_shared(
-            pool.pat,
-            f"/repos/{pool.owner}/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=50",
+        path = (
+            f"/repos/{pool.owner}/{repo}/actions/runs/{run['id']}/jobs"
+            f"?filter=latest&per_page={_QUEUE_PAGE_SIZE}"
         )
-        if jobs_data is None:
-            return QueueScan(failed=1)
         ages: list[float] = []
-        for job in jobs_data.get("jobs", []):
+        failed = 0
+        for job in self._queue_records(pool.pat, path, "jobs"):
+            if job is None:
+                failed = 1
+                break
             if job.get("status") == "queued":
                 # Only jobs this pool's runners can take: a job for another
                 # pool's labels (or a GitHub-hosted one) must not start runners
@@ -516,7 +543,23 @@ class GitHubClient:
             elif jobs is not None:
                 jobs.append(_job_info(job, run, repo))
         queued = sum(1 for age in ages if not pool.queued_min_age or age >= pool.queued_min_age)
-        return QueueScan(queued=queued, ages=tuple(ages))
+        return QueueScan(queued=queued, failed=failed, ages=tuple(ages))
+
+    def _queue_records(self, pat: str, path: str, key: str) -> Iterator[dict[str, Any] | None]:
+        """Yield records in order, with None marking a page that could not be read."""
+        page = 1
+        while True:
+            data = self._get_shared(pat, path if page == 1 else f"{path}&page={page}")
+            if not isinstance(data, dict) or not isinstance(records := data.get(key, []), list):
+                yield None
+                return
+            yield from records
+            total = data.get("total_count")
+            if len(records) < _QUEUE_PAGE_SIZE or (
+                isinstance(total, int) and page * _QUEUE_PAGE_SIZE >= total
+            ):
+                return
+            page += 1
 
     def _age(self, job: dict[str, Any]) -> float:
         """Seconds queued; an unreadable timestamp is infinitely old, so the job counts."""
@@ -592,7 +635,7 @@ class GitHubClient:
             )
             return None
 
-        policy = self._request(
+        policy = self._get(
             pool.pat,
             f"/orgs/{pool.owner}/actions/policies/{pool.main_actions_policy_id}",
             api_version="2026-03-10",
