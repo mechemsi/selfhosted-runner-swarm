@@ -23,6 +23,7 @@ from flask.testing import FlaskClient
 from rorch.config import PoolConfig
 from rorch.protocols import ContainerInfo
 from rorch.resolver import ConfigResolver
+from rorch.scaler import PoolScaler
 from rorch.server import (
     MAX_TOKEN_FAILURES,
     ApiServer,
@@ -322,6 +323,24 @@ class TestConfigEditing:
 
 
 class TestMetrics:
+    def test_repository_inspection_failure_is_visible_in_state_and_metrics(
+        self, deps: Deps, docker: MagicMock, personal_pool: PoolConfig
+    ) -> None:
+        github = MagicMock()
+        github.list_repositories.return_value = ["alpha"]
+        github.list_runners.return_value = None
+        docker.running_containers.return_value = []
+
+        PoolScaler(github, docker, store=deps.store).tick(personal_pool)
+
+        client = create_app(deps).test_client()
+        event = _json(client.get("/api/state"))["events"][0]
+        assert event["event"] == "repository_inspection_failed"
+        assert event["pool"] == "personal-pool-alpha"
+        assert "test-user/alpha" in event["reason"]
+        metrics = client.get("/metrics").get_data(as_text=True)
+        assert 'rorch_events_24h{event="repository_inspection_failed"} 1' in metrics
+
     def test_prometheus_exposition(
         self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:

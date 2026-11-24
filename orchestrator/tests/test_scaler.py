@@ -218,20 +218,33 @@ class TestPersonalAccountScaling:
 
         assert sorted(inspected) == ["alpha", "beta"]
 
-    def test_skips_scaling_when_any_runner_snapshot_fails(
+    def test_scales_healthy_repos_within_capacity_when_one_runner_snapshot_fails(
         self,
         mock_github: MagicMock,
         mock_docker: MagicMock,
         personal_pool: PoolConfig,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        personal_pool.max_runners = 3
+        failed_repo = personal_pool.for_repository("alpha")
+        healthy_repo = personal_pool.for_repository("beta")
         mock_github.list_repositories.return_value = ["alpha", "beta"]
         mock_github.list_runners.side_effect = lambda pool: None if pool.repo == "alpha" else []
-        mock_docker.running_containers.return_value = []
+        mock_docker.running_containers.side_effect = lambda prefix: (
+            [f"{prefix}-running"] if prefix == failed_repo.container_prefix else []
+        )
         mock_github.get_queued_count.return_value = 3
 
         PoolScaler(mock_github, mock_docker).tick(personal_pool)
 
-        mock_docker.spawn_runner.assert_not_called()
+        assert [call.args[0].repo for call in mock_docker.spawn_runner.call_args_list] == [
+            "beta",
+            "beta",
+        ]
+        assert mock_docker.cleanup_stuck.call_args.args[0] == healthy_repo.container_prefix
+        mock_github.deregister_runner.assert_not_called()
+        assert failed_repo.display in caplog.text
+        assert "skipping scaling" not in caplog.text
 
     def test_runs_removal_and_provisioning_in_parallel(
         self,

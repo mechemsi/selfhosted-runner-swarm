@@ -67,6 +67,7 @@ EVENT_STUCK_KILL = "stuck_kill"
 EVENT_AGED_KILL = "aged_kill"
 EVENT_DEREGISTER = "deregister"
 EVENT_MANUAL_STOP = "manual_stop"
+EVENT_REPOSITORY_INSPECTION_FAILED = "repository_inspection_failed"
 
 
 @dataclass(frozen=True)
