@@ -28,6 +28,8 @@ DEFAULT_CI_CONTAINER_MAX_AGE = 360
 # back the orchestrator moves the runners with it. A bare local name such as
 # gh-runner:latest (scripts/build-runner.sh) is built on the host instead.
 DEFAULT_RUNNER_IMAGE = "ghcr.io/mechemsi/rorch-runner:{version}"
+MAIN_TRUSTED_LABEL = "main-trusted"
+MAIN_TRUSTED_FIXED_FIELDS = frozenset({"min_idle", "runner_labels", "network_mode"})
 
 
 @dataclass
@@ -91,6 +93,13 @@ class PoolConfig:
     # through the API, a URL plus any env var name would send that secret anywhere.
     provider: str = "github"
     base_url: str = ""
+    main_workflow: str = ""
+    main_runner_group_id: int = 0
+    main_actions_policy_id: int = 0
+
+    @property
+    def is_main_trusted(self) -> bool:
+        return bool(self.main_workflow or self.main_runner_group_id or self.main_actions_policy_id)
 
     @property
     def is_gitea(self) -> bool:
@@ -99,10 +108,10 @@ class PoolConfig:
     @property
     def label_set(self) -> frozenset[str]:
         """Labels the runner registers with: the configured ones plus the
-        defaults config.sh always adds. GitHub compares labels case-insensitively.
-        gitea-runner adds no defaults, so a Gitea pool has only what it lists."""
+        defaults config.sh adds. GitHub compares labels case-insensitively.
+        Gitea and GitHub JIT runners register with explicit labels."""
         configured = {label.strip().lower() for label in self.runner_labels.split(",")}
-        if self.is_gitea:
+        if self.is_gitea or self.is_main_trusted:
             return frozenset(configured - {""})
         return frozenset((configured | {"self-hosted", "linux", "x64"}) - {""})
 
@@ -160,7 +169,7 @@ class PoolConfig:
 
     @property
     def api_runners_path(self) -> str:
-        if self.repo:
+        if self.repo and not self.is_main_trusted:
             return f"/repos/{self.owner}/{self.repo}/actions/runners"
         return f"/orgs/{self.owner}/actions/runners"
 
@@ -362,6 +371,9 @@ def _load_from_yaml(path: str) -> list[PoolConfig]:
                 job_started_hook=str(p.get("job_started_hook", "")).strip(),
                 provider=provider,
                 base_url=str(p.get("base_url", "")).strip().rstrip("/"),
+                main_workflow=p.get("main_workflow", ""),
+                main_runner_group_id=p.get("main_runner_group_id", 0),
+                main_actions_policy_id=p.get("main_actions_policy_id", 0),
             )
         )
     return pools
@@ -399,6 +411,8 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
     with a 400 instead of killing the orchestrator process.
     """
     errors: list[str] = []
+    if any(p.is_main_trusted for p in pools) and not all(p.is_main_trusted for p in pools):
+        errors.append("Main-trusted pools require a dedicated host with only main-trusted pools")
     for p in pools:
         if not p.pat or p.pat.startswith("${"):
             errors.append(f"Pool '{p.name}': pat is missing or unresolved (got: '{p.pat}')")
@@ -443,6 +457,34 @@ def validation_errors(pools: list[PoolConfig]) -> list[str]:
             )
         if p.job_started_hook and not p.job_started_hook.startswith("/"):
             errors.append(f"Pool '{p.name}': job_started_hook must be an absolute host path")
+        errors.extend(_main_trusted_errors(p))
+    return errors
+
+
+def _main_trusted_errors(pool: PoolConfig) -> list[str]:
+    prefix = f"Pool '{pool.name}':"
+    if not pool.is_main_trusted:
+        if MAIN_TRUSTED_LABEL in pool.label_set:
+            return [f"{prefix} {MAIN_TRUSTED_LABEL} is reserved"]
+        return []
+
+    errors = []
+    if pool.provider != "github" or not pool.repo:
+        errors.append(f"{prefix} main-trusted pools require a GitHub organization repository")
+    if not isinstance(pool.main_workflow, str) or not re.fullmatch(
+        r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", pool.main_workflow
+    ):
+        errors.append(f"{prefix} main_workflow must be a .github/workflows/*.yml or *.yaml path")
+    for field in ("main_runner_group_id", "main_actions_policy_id"):
+        value = getattr(pool, field)
+        if type(value) is not int or value < 1:
+            errors.append(f"{prefix} {field} must be a positive integer")
+    if pool.label_set != {MAIN_TRUSTED_LABEL} or pool.min_idle or pool.job_started_hook:
+        errors.append(
+            f"{prefix} main-trusted requires only its reserved label, min_idle 0 and no hook"
+        )
+    if pool.network_mode != "bridge":
+        errors.append(f"{prefix} main-trusted requires network_mode: bridge")
     return errors
 
 

@@ -16,6 +16,7 @@ Master index for project documentation.
 
 - [Implement personal account all-repositories runner pool](plans/2026-07-11-personal-all-repositories.md) — Add discovery and account-wide capacity allocation.
 - [Peer federation](plans/2026-11-06-peer-federation.md) - Equal orchestrators share a queue by free capacity and temperature.
+- [Main-only runner pools](plans/2026-11-25-main-trusted-pool.md) - Restrict assignment on GitHub and give each runner a private Docker daemon.
 
 ## Implementations
 

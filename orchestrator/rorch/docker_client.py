@@ -161,8 +161,10 @@ class DockerClient:
         self,
         store: Store | None = None,
         registration_token: Callable[[PoolConfig], str | None] | None = None,
+        main_jit_config: Callable[[PoolConfig, str], str | None] | None = None,
     ) -> None:
         self._registration_token = registration_token
+        self._main_jit_config = main_jit_config
         self._build_lock = threading.Lock()
         self._build_retry_at: dict[str, float] = {}
         self._store = store
@@ -653,8 +655,6 @@ class DockerClient:
         name = f"{pool.container_prefix}-{uid}"
         log.info("  ▶  Spawning %s", name)
 
-        cache_base = f"/opt/runner-cache/{pool.container_prefix}"
-
         args = [
             "run",
             "-d",
@@ -663,21 +663,33 @@ class DockerClient:
             "--restart",
             "no",
             "--network",
-            pool.network_mode,
+            "bridge" if pool.is_main_trusted else pool.network_mode,
             "--memory",
             pool.memory_limit,
             "--memory-swap",
             pool.memory_limit,
             "--pids-limit",
             "512",
-            "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
-            "-v",
-            f"{TOOL_CACHE_DIR}:{TOOL_CACHE_DIR}",
         ]
-
-        for host_dir, container_dir in self._CACHE_MOUNTS:
-            args.extend(["-v", f"{cache_base}/{host_dir}:{container_dir}"])
+        if pool.is_main_trusted:
+            config = self._main_jit_config(pool, name) if self._main_jit_config else None
+            if not config:
+                self._record(
+                    EVENT_SPAWN_FAILED, pool=pool.name, reason="no main-trusted JIT config"
+                )
+                return False
+            args.extend(
+                [
+                    "--privileged",
+                    "--init",
+                    "--entrypoint",
+                    "/main-trusted-entrypoint.sh",
+                    "-e",
+                    f"RORCH_MAIN_JIT_CONFIG={config}",
+                ]
+            )
+        else:
+            args.extend(self._shared_mounts(pool))
 
         # exec: jobs run binaries out of the workspace (node_modules/.bin, vendor/bin).
         if pool.work_tmpfs_enabled:
@@ -708,7 +720,7 @@ class DockerClient:
                     f"GITEA_RUNNER_REGISTRATION_TOKEN={token}",
                 ]
             )
-        else:
+        elif not pool.is_main_trusted:
             args.extend(["-e", f"GITHUB_PAT={pool.pat}"])
 
         args.extend(
@@ -728,7 +740,7 @@ class DockerClient:
 
         # --mount, unlike -v, refuses a missing source instead of creating an
         # empty directory there, so a typo fails the spawn rather than every job.
-        if pool.job_started_hook:
+        if pool.job_started_hook and not pool.is_main_trusted:
             args.extend(
                 [
                     "--mount",
@@ -754,6 +766,18 @@ class DockerClient:
             EVENT_SPAWN_FAILED, container=name, pool=pool.name, reason=f"docker run exit {code}"
         )
         return False
+
+    def _shared_mounts(self, pool: PoolConfig) -> list[str]:
+        cache_base = f"/opt/runner-cache/{pool.container_prefix}"
+        args = [
+            "-v",
+            f"{DOCKER_SOCKET}:{DOCKER_SOCKET}",
+            "-v",
+            f"{TOOL_CACHE_DIR}:{TOOL_CACHE_DIR}",
+        ]
+        for host_dir, container_dir in self._CACHE_MOUNTS:
+            args.extend(["-v", f"{cache_base}/{host_dir}:{container_dir}"])
+        return args
 
     def prune_images(self, until: str = "24h", all_unused: bool = True) -> None:
         """Remove unused images older than the given threshold.

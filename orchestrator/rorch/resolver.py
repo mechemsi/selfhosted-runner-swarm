@@ -15,7 +15,12 @@ import os
 from dataclasses import dataclass, replace
 from typing import Any
 
-from rorch.config import PoolConfig, validation_errors
+from rorch.config import (
+    MAIN_TRUSTED_FIXED_FIELDS,
+    MAIN_TRUSTED_LABEL,
+    PoolConfig,
+    validation_errors,
+)
 from rorch.store import PoolState, Store
 
 log = logging.getLogger(__name__)
@@ -125,6 +130,10 @@ class ConfigResolver:
     def base_pools(self) -> list[PoolConfig]:
         return list(self._base_pools)
 
+    @property
+    def main_only(self) -> bool:
+        return any(pool.is_main_trusted for pool in self._base_pools)
+
     def resolve(self) -> EffectiveConfig:
         if self._store is None:
             return EffectiveConfig(
@@ -150,9 +159,9 @@ class ConfigResolver:
                 continue
             pools.append(self._apply(base, entry["data"]))
 
-        # Rows with no YAML counterpart are pools created through the API.
+        # A main-only host cannot run UI-created pools with the host socket.
         for name, entry in overrides.items():
-            if entry["origin"] != "ui" or entry["disabled"]:
+            if self.main_only or entry["origin"] != "ui" or entry["disabled"]:
                 continue
             created = self._build_ui_pool(name, entry["data"])
             if created is not None:
@@ -170,13 +179,20 @@ class ConfigResolver:
     @staticmethod
     def _apply(base: PoolConfig, data: dict[str, Any]) -> PoolConfig:
         clean = {k: v for k, v in coerce_pool_fields(data).items() if k in TUNABLE_FIELDS}
+        if base.is_main_trusted:
+            for key in MAIN_TRUSTED_FIXED_FIELDS:
+                clean.pop(key, None)
         if not clean:
             return base
         try:
-            return replace(base, **clean)
+            candidate = replace(base, **clean)
         except (TypeError, ValueError):
             log.warning("Ignoring invalid override for pool '%s': %s", base.name, data)
             return base
+        if not candidate.is_main_trusted and MAIN_TRUSTED_LABEL in candidate.label_set:
+            log.warning("Ignoring reserved runner label override for pool '%s'", base.name)
+            return replace(candidate, runner_labels=base.runner_labels)
+        return candidate
 
     @staticmethod
     def _build_ui_pool(name: str, data: dict[str, Any]) -> PoolConfig | None:

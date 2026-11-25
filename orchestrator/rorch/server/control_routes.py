@@ -9,7 +9,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify
 
-from rorch.config import PoolConfig, validation_errors
+from rorch.config import MAIN_TRUSTED_FIXED_FIELDS, PoolConfig, validation_errors
 from rorch.resolver import (
     GLOBAL_KEYS,
     TUNABLE_FIELDS,
@@ -82,6 +82,8 @@ def scale_pool(name: str) -> Any:
         return jsonify(error="delta must be an integer"), 400
     if delta not in (-1, 1):
         return jsonify(error="delta must be -1 or 1"), 400
+    if delta > 0 and pool.is_main_trusted:
+        return jsonify(error="main-trusted runners are provisioned from the queue"), 409
     if delta > 0:
         ok = deps.docker.spawn_runner(pool)
         deps.store.audit(_actor(), "scale_up", name, "manual +1")
@@ -114,6 +116,8 @@ def patch_pool(name: str) -> Any:
     if rejected:
         return jsonify(error=f"not editable: {', '.join(rejected)}"), 400
     base = next((p for p in deps.resolver.base_pools if p.name == name), None)
+    if base is not None and base.is_main_trusted and MAIN_TRUSTED_FIXED_FIELDS.intersection(body):
+        return jsonify(error="main-trusted runner labels, network and min_idle are fixed"), 400
     existing = deps.store.pool_overrides().get(name)
     if base is None and (existing is None or existing["origin"] != "ui"):
         return jsonify(error=f"unknown pool '{name}'"), 404
@@ -152,6 +156,8 @@ def reset_pool(name: str) -> Any:
 @serialized
 def create_pool() -> Any:
     deps = _deps()
+    if deps.resolver.main_only:
+        return jsonify(error="main-trusted pools must be defined in config.yml"), 409
     body = _json_body()
     name = str(body.pop("name", "")).strip()
     if not name:
@@ -240,6 +246,9 @@ def _candidate_pool(deps: Deps, name: str, data: dict[str, Any], origin: str) ->
     if base is None:
         return None
     clean = {k: v for k, v in coerce_pool_fields(data).items() if k in TUNABLE_FIELDS}
+    if base.is_main_trusted:
+        for key in MAIN_TRUSTED_FIXED_FIELDS:
+            clean.pop(key, None)
     try:
         return replace(base, **clean)
     except (TypeError, ValueError):

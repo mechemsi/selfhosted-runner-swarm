@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG NODE_VERSION=22.23.3
 ARG PYTHON_VERSION=3.11.12
 
-# Install dependencies + Docker CLI only (no daemon: uses the host socket).
+# Install dependencies for both runner modes.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     curl \
     jq \
@@ -185,6 +185,7 @@ RUN curl -fsSL -o /tmp/gitea-runner.xz \
     && rm -f /tmp/gitea-runner
 
 COPY entrypoint.sh /entrypoint.sh
+COPY --chmod=0755 main-trusted-entrypoint.sh /main-trusted-entrypoint.sh
 # 0755, not `chmod +x`. COPY preserves the host file's mode, and `+x` only adds
 # the execute bit — a host file at 0600 becomes 0711, which bash cannot run as
 # the non-root `runner` user because executing a script also requires *read*
@@ -192,6 +193,11 @@ COPY entrypoint.sh /entrypoint.sh
 # the runner dies before registering. Set the mode absolutely so the image does
 # not depend on the checkout's permissions.
 RUN chmod 0755 /entrypoint.sh
+
+# Ordinary runners use the host socket. The trusted entrypoint alone starts dockerd.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce docker-buildx-plugin docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
 
 # Starts as root on purpose: the entrypoint joins the socket's group, then
 # re-executes itself as `runner` (setpriv, from util-linux in the base image).

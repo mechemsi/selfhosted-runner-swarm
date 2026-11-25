@@ -12,7 +12,7 @@ RORCH watches your GitHub Actions job queues and automatically spins up/down Doc
 - **Auto-scaling** — spawns runners when jobs queue up, cleans up when idle
 - **Resource limits** — per-runner memory and CPU caps to protect your host
 - **Org, personal, or repo level** — discover personal repos automatically or target a fixed scope
-- **Docker-in-Docker** — runners can spin up containers inside workflows (via host socket)
+- **Docker in workflows** via the host socket or a private daemon in a main-only runner
 - **Ephemeral runners** — no stale state, clean environment every run
 - **Stuck detection**: kills containers that fail to register within `stuck_timeout` (8 minutes), never one running a job
 
@@ -126,7 +126,7 @@ image's `@sha256:` digest, which is the reference to use when you want to pin by
 than a tag. Each image also carries a build provenance attestation
 (`gh attestation verify oci://ghcr.io/mechemsi/rorch-runner:X.Y.Z -R mechemsi/selfhosted-runner-swarm`).
 
-The runner image works on any host: its entrypoint starts as root, reads the GID of the
+For ordinary pools, the runner entrypoint starts as root, reads the GID of the
 mounted `/var/run/docker.sock`, adds the `runner` user to a group with that GID and
 re-executes itself as `runner` before registering. The default `runner_image`,
 `ghcr.io/mechemsi/rorch-runner:{version}`, follows the orchestrator's own version, so a
@@ -536,6 +536,73 @@ any directory a job can write. It is `config.yml` only, not a dashboard tunable.
 
 Jobs on the ordinary pool must then ask for a label the gated runner lacks (e.g. `docker`):
 `[self-hosted, linux]` alone also matches the gated runner, whose hook would fail the job.
+
+### Main-only runner pools
+
+Use a dedicated Docker host or VM for main-only pools. RORCH rejects mixing these
+pools with ordinary pools in one config and disables dashboard pool creation on
+the trusted instance. Ordinary PR runners with a host socket can control their own
+host. Keep its Docker storage, API access and credentials separate from the trusted
+instance. In particular, credentials available to PR jobs must not be able to edit
+the trusted runner group, Actions policy or protected `main` branch.
+
+For a private repository in a GitHub organization with runner group and Actions
+policy support, create a dedicated runner group (for example `ci-main`). Set
+**Selected repositories** to the opted-in repo, disable public repository access
+and restrict **Selected workflows** to just
+`acme/myapp/.github/workflows/main-ci.yml@refs/heads/main`. Also create an
+[organization Actions policy](https://docs.github.com/en/rest/actions/policies?apiVersion=2026-03-10#create-an-organization-actions-policy)
+with active enforcement, a `repository_name` include of `myapp` and a
+`workflow_path` include of `.github/workflows/main-ci.yml`, both with empty
+exclude lists. Its `restrict_action_events` rule must allow only `push`.
+Use a new workflow path and set these rules before the first run.
+
+Use the organization runner group and policy IDs in the trusted instance's
+`config.yml`. Its PAT needs repository Actions read and organization
+Self-hosted runners and Administration write permissions.
+
+```yaml
+pools:
+  - name: main-ci
+    owner: acme
+    repo: myapp
+    pat: "${GITHUB_MAIN_PAT}"
+    main_workflow: .github/workflows/main-ci.yml
+    main_runner_group_id: 42
+    main_actions_policy_id: 17
+    runner_labels: main-trusted
+    min_idle: 0
+    max_runners: 2
+    network_mode: bridge
+```
+
+In `.github/workflows/main-ci.yml`, put the jobs that should run on every push or
+merge to `main`. Use the actual group name from GitHub.
+
+```yaml
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on:
+      group: ci-main
+      labels: main-trusted
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker info
+```
+
+RORCH counts eligible pushes and verifies both GitHub restrictions before each
+just-in-time registration. GitHub enforces the restrictions when it schedules
+jobs, even while a runner is already online. Pause and drain the pool before
+editing its GitHub restrictions or rolling back to a version without this mode.
+
+Each trusted runner starts its own Docker daemon on a Unix socket inside its
+container. It uses privileged Docker-in-Docker on the dedicated host, with no
+host socket or shared cache mounts. The runner's Docker images and build cache
+disappear when RORCH removes the runner container. For reuse across jobs, pull
+from a registry that PR jobs cannot write to.
 
 ## Scaling logic
 

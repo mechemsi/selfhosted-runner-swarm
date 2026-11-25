@@ -31,7 +31,9 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 
 # ── Validation ────────────────────────────────────────────────────────────────
-if [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
+if [[ -n "${RORCH_MAIN_JIT_CONFIG:-}" ]]; then
+    required_vars=("RORCH_MAIN_JIT_CONFIG" "RUNNER_NAME")
+elif [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
     required_vars=("GITEA_RUNNER_REGISTRATION_TOKEN" "GITEA_URL" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
 else
     required_vars=("GITHUB_PAT" "GITHUB_OWNER" "GITHUB_REPO" "RUNNER_NAME")
@@ -102,6 +104,12 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 echo "    Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null)"
+
+if [[ -n "${RORCH_MAIN_JIT_CONFIG:-}" ]]; then
+    jit_config="$RORCH_MAIN_JIT_CONFIG"
+    unset RORCH_MAIN_JIT_CONFIG
+    exec ./run.sh --jitconfig "$jit_config"
+fi
 
 # ── Gitea: gitea-runner instead of the GitHub agent ──────────────────────────
 if [[ "${RORCH_PROVIDER:-github}" == "gitea" ]]; then
