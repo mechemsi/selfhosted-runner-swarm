@@ -331,6 +331,16 @@ ones through a separate bounded worker pool. This preserves `max_runners` while 
 waits across large personal accounts. Set `repo_check_workers` and `runner_operation_workers`
 per pool to tune concurrency; limits are 32 and 16 respectively.
 
+If a GitHub runner inspection fails, the other repositories can still scale. The failed
+repository's running containers count toward `max_runners`. If Docker cannot confirm the
+running count, RORCH defers provisioning for that personal pool until the next tick.
+
+The dashboard Events table shows the latest copy of each `repository_inspection_failed` event
+with the repository name. `/api/events` retains the full event history, and `/metrics` counts
+each failure in `rorch_events_24h{event="repository_inspection_failed"}`. For runner listing
+failures, check the matching GitHub API error in the orchestrator logs for the HTTP status and
+response message.
+
 ### Pools tick independently
 
 Each pool ticks on its own lane. The main loop wakes every `POLL_INTERVAL`, starts a tick for

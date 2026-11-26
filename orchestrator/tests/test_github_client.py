@@ -130,6 +130,47 @@ def _response(data: bytes, headers: dict[str, str], status: int = 200) -> MagicM
     return response
 
 
+class TestReadRetries:
+    @staticmethod
+    def _http_error(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError(
+            "https://api.github.com/test", code, "GitHub error", {}, io.BytesIO(b"{}")
+        )
+
+    def test_runner_listing_retries_timeout_and_service_error(self, pool: PoolConfig) -> None:
+        sleep = MagicMock()
+        client = GitHubClient(sleep=sleep)
+        reply = _response(b'{"runners": []}', {})
+
+        with patch(
+            "urllib.request.urlopen", side_effect=[TimeoutError(), self._http_error(503), reply]
+        ) as urlopen:
+            assert client.list_runners(pool) == []
+
+        assert urlopen.call_count == 3
+        assert [call.args for call in sleep.call_args_list] == [(1.0,), (2.0,)]
+
+    def test_runner_listing_stops_retrying_after_three_attempts(self, pool: PoolConfig) -> None:
+        sleep = MagicMock()
+        client = GitHubClient(sleep=sleep)
+
+        with patch("urllib.request.urlopen", side_effect=TimeoutError()) as urlopen:
+            assert client.list_runners(pool) is None
+
+        assert urlopen.call_count == 3
+        assert sleep.call_count == 2
+
+    def test_missing_repository_is_not_retried(self, pool: PoolConfig) -> None:
+        sleep = MagicMock()
+        client = GitHubClient(sleep=sleep)
+
+        with patch("urllib.request.urlopen", side_effect=self._http_error(404)) as urlopen:
+            assert client.list_runners(pool) is None
+
+        urlopen.assert_called_once()
+        sleep.assert_not_called()
+
+
 class TestRateLimitProtection:
     def test_reuses_cached_body_after_conditional_304(self) -> None:
         client = GitHubClient(rate_limit_reserve=0)
@@ -401,6 +442,64 @@ class TestQueuedCount:
 
         assert client.get_queued_count(pool, jobs) == 1
         assert [job.job_id for job in jobs] == [11]
+
+    def test_counts_queued_jobs_in_in_progress_runs_on_later_pages(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=in_progress&per_page=50&page=2": {
+                    "total_count": 51,
+                    "workflow_runs": [{"id": 51}],
+                },
+                "status=in_progress": {
+                    "total_count": 51,
+                    "workflow_runs": [{"id": run_id} for run_id in range(1, 51)],
+                },
+                "actions/runs?": {"workflow_runs": []},
+                "runs/51/jobs": {"jobs": [{"id": 510, "status": "queued", "labels": ["docker"]}]},
+                "/jobs?": {"jobs": []},
+            }
+        )
+
+        assert client.get_queued_count(pool) == 1
+
+    def test_counts_later_pages_of_jobs_in_an_in_progress_run(self, pool: PoolConfig) -> None:
+        client = _scan_client(
+            {
+                "status=in_progress": _RUNS,
+                "actions/runs?": {"workflow_runs": []},
+                "runs/1/jobs?filter=latest&per_page=50&page=2": {
+                    "total_count": 51,
+                    "jobs": [{"id": 51, "status": "queued", "labels": ["docker"]}],
+                },
+                "runs/1/jobs": {
+                    "total_count": 51,
+                    "jobs": [{"id": job_id, "status": "completed"} for job_id in range(1, 51)],
+                },
+            }
+        )
+        jobs: list[JobInfo] = []
+
+        assert client.get_queued_count(pool, jobs) == 1
+        assert [job.job_id for job in jobs] == list(range(1, 51))
+
+    def test_failed_later_job_page_keeps_earlier_matches(
+        self, pool: PoolConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _scan_client(
+            {
+                "status=in_progress": _RUNS,
+                "actions/runs?": {"workflow_runs": []},
+                "runs/1/jobs?filter=latest&per_page=50&page=2": None,
+                "runs/1/jobs": {
+                    "total_count": 51,
+                    "jobs": [{"id": 1, "status": "queued", "labels": ["docker"]}]
+                    + [{"id": job_id, "status": "completed"} for job_id in range(2, 51)],
+                },
+            }
+        )
+
+        assert client.get_queued_count(pool) == 1
+        assert "1 GitHub request(s) failed" in caplog.text
 
     def test_clean_scan_logs_no_warning(
         self, pool: PoolConfig, caplog: pytest.LogCaptureFixture

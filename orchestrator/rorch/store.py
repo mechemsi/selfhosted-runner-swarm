@@ -67,6 +67,7 @@ EVENT_STUCK_KILL = "stuck_kill"
 EVENT_AGED_KILL = "aged_kill"
 EVENT_DEREGISTER = "deregister"
 EVENT_MANUAL_STOP = "manual_stop"
+EVENT_REPOSITORY_INSPECTION_FAILED = "repository_inspection_failed"
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,18 @@ class Store:
         rows = self._read(
             "SELECT ts, pool, container, event, reason FROM runner_events ORDER BY id DESC LIMIT ?",
             (limit,),
+        )
+        return [dict(row) for row in rows]
+
+    def dashboard_events(self, limit: int) -> list[dict[str, Any]]:
+        """Keep the latest copy of each inspection failure in the dashboard feed."""
+        failure = EVENT_REPOSITORY_INSPECTION_FAILED
+        rows = self._read(
+            "SELECT ts, pool, container, event, reason FROM runner_events"
+            " WHERE event <> ? OR id IN ("
+            "SELECT MAX(id) FROM runner_events WHERE event = ? GROUP BY pool, reason"
+            ") ORDER BY id DESC LIMIT ?",
+            (failure, failure, limit),
         )
         return [dict(row) for row in rows]
 

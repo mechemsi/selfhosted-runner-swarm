@@ -20,7 +20,13 @@ import os
 import pytest
 
 from rorch.dialect import parse_dsn, table_names
-from rorch.store import EVENT_SPAWN, Store, TickSnapshot, open_store
+from rorch.store import (
+    EVENT_REPOSITORY_INSPECTION_FAILED,
+    EVENT_SPAWN,
+    Store,
+    TickSnapshot,
+    open_store,
+)
 
 DB_URL = os.environ.get("RORCH_TEST_DB_URL", "")
 pytestmark = pytest.mark.skipif(not DB_URL, reason="RORCH_TEST_DB_URL is not set")
@@ -176,6 +182,16 @@ class TestHistoryAndRetention:
         store.record_event(EVENT_SPAWN, pool="a")
         store.record_event(EVENT_SPAWN, pool="a")
         assert store.event_counts_since(1)[EVENT_SPAWN] == 2
+
+    def test_dashboard_event_limit_applies_after_coalescing_failures(self, store: Store) -> None:
+        failure = EVENT_REPOSITORY_INSPECTION_FAILED
+        store.record_event(failure, pool="personal-alpha", reason="owner/alpha")
+        store.record_event(EVENT_SPAWN, pool="healthy", container="gh-runner-healthy-1")
+        store.record_event(failure, pool="personal-alpha", reason="owner/alpha")
+        store.record_event(failure, pool="personal-alpha", reason="owner/alpha")
+
+        assert [row["event"] for row in store.dashboard_events(2)] == [failure, EVENT_SPAWN]
+        assert store.event_counts_since(1)[failure] == 3
 
 
 class TestDegradation:

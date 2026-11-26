@@ -23,6 +23,7 @@ from flask.testing import FlaskClient
 from rorch.config import PoolConfig
 from rorch.protocols import ContainerInfo
 from rorch.resolver import ConfigResolver
+from rorch.scaler import PoolScaler
 from rorch.server import (
     MAX_TOKEN_FAILURES,
     ApiServer,
@@ -34,7 +35,7 @@ from rorch.server import (
     resolve_token,
     start,
 )
-from rorch.store import Store, TickSnapshot
+from rorch.store import EVENT_REPOSITORY_INSPECTION_FAILED, EVENT_SPAWN, Store, TickSnapshot
 
 
 @pytest.fixture
@@ -322,6 +323,44 @@ class TestConfigEditing:
 
 
 class TestMetrics:
+    def test_repository_inspection_failure_is_visible_in_state_and_metrics(
+        self, deps: Deps, docker: MagicMock, personal_pool: PoolConfig
+    ) -> None:
+        github = MagicMock()
+        github.list_repositories.return_value = ["alpha"]
+        github.list_runners.return_value = None
+        docker.running_containers.return_value = []
+
+        PoolScaler(github, docker, store=deps.store).tick(personal_pool)
+
+        client = create_app(deps).test_client()
+        event = _json(client.get("/api/state"))["events"][0]
+        assert event["event"] == "repository_inspection_failed"
+        assert event["pool"] == "personal-pool-alpha"
+        assert "test-user/alpha" in event["reason"]
+        metrics = client.get("/metrics").get_data(as_text=True)
+        assert 'rorch_events_24h{event="repository_inspection_failed"} 1' in metrics
+
+    def test_dashboard_keeps_lifecycle_events_visible_during_repeated_inspection_failures(
+        self, client: FlaskClient, store: Store
+    ) -> None:
+        store.record_event(EVENT_SPAWN, pool="healthy", container="gh-runner-healthy-first")
+        store.record_event(EVENT_SPAWN, pool="healthy", container="gh-runner-healthy-second")
+        for _ in range(13):
+            store.record_event(EVENT_REPOSITORY_INSPECTION_FAILED, pool="personal-alpha")
+            store.record_event(EVENT_REPOSITORY_INSPECTION_FAILED, pool="personal-beta")
+
+        dashboard = _json(client.get("/api/state"))["events"]
+        assert [(event["event"], event["pool"], event["container"]) for event in dashboard] == [
+            (EVENT_REPOSITORY_INSPECTION_FAILED, "personal-beta", ""),
+            (EVENT_REPOSITORY_INSPECTION_FAILED, "personal-alpha", ""),
+            (EVENT_SPAWN, "healthy", "gh-runner-healthy-second"),
+            (EVENT_SPAWN, "healthy", "gh-runner-healthy-first"),
+        ]
+        assert len(_json(client.get("/api/events"))["events"]) == 28
+        metrics = client.get("/metrics").get_data(as_text=True)
+        assert 'rorch_events_24h{event="repository_inspection_failed"} 26' in metrics
+
     def test_prometheus_exposition(
         self, client: FlaskClient, store: Store, pool: PoolConfig
     ) -> None:

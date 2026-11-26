@@ -71,6 +71,38 @@ def test_counts_only_main_pushes_for_the_trusted_pool(
     assert "/actions/workflows/main-ci.yml/runs?" in scan.call_args_list[0].args[1]
 
 
+def test_only_main_pushes_count_on_later_run_pages(
+    trusted: PoolConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queued_job = {"jobs": [{"status": "queued", "labels": ["main-trusted"]}]}
+    scan = Mock(
+        side_effect=[
+            {"workflow_runs": []},
+            {"workflow_runs": []},
+            {"total_count": 52, "workflow_runs": [{"id": index} for index in range(1, 51)]},
+            *[{"jobs": []}] * 50,
+            {
+                "total_count": 52,
+                "workflow_runs": [
+                    {"id": 51, "event": "push", "head_branch": "main"},
+                    {"id": 52, "event": "pull_request", "head_branch": "main"},
+                ],
+            },
+            queued_job,
+            queued_job,
+        ]
+    )
+    client = GitHubClient()
+    monkeypatch.setattr(client, "_get_shared", scan)
+    second_page = (
+        f"/repos/{trusted.owner}/{trusted.repo}/actions/workflows/main-ci.yml/runs"
+        "?status=in_progress&per_page=50&branch=main&event=push&page=2"
+    )
+
+    assert client.get_queued_count(trusted) == 1
+    assert call(trusted.pat, second_page) in scan.call_args_list
+
+
 def test_trusted_and_ordinary_pools_cannot_coexist(trusted: PoolConfig, pool: PoolConfig) -> None:
     assert validation_errors([trusted, replace(pool, name="ordinary")])
 
@@ -193,6 +225,46 @@ def test_requests_jit_registration_in_verified_group(
         "labels": ["main-trusted"],
         "work_folder": "_work",
     }
+
+
+@pytest.mark.parametrize("failures", [1, 3])
+def test_versioned_policy_read_retries_before_jit_registration(
+    trusted: PoolConfig,
+    github_policy_responses: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    failures: int,
+) -> None:
+    calls: list[urllib.request.Request] = []
+    responses = iter(
+        [
+            github_policy_responses[0],
+            *(TimeoutError() for _ in range(failures)),
+            *github_policy_responses[1:],
+            {"encoded_jit_config": "jit-fixture"},
+        ]
+    )
+
+    @contextmanager
+    def urlopen(request: urllib.request.Request, *, timeout: int) -> Iterator[SimpleNamespace]:
+        calls.append(request)
+        response = next(responses)
+        if isinstance(response, TimeoutError):
+            raise response
+        yield SimpleNamespace(headers={}, status=200, read=lambda: json.dumps(response).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    sleep = Mock()
+    client = GitHubClient(sleep=sleep, wall_clock=lambda: 10.0)
+
+    config = client.create_main_jit_config(trusted, "runner")
+
+    assert config == ("jit-fixture" if failures == 1 else None)
+    versions = [
+        item.get_header("X-github-api-version") for item in calls if "/policies/" in item.full_url
+    ]
+    assert versions == ["2026-03-10"] * min(failures + 1, 3)
+    assert [item.get_method() for item in calls].count("POST") == int(failures == 1)
+    assert sleep.call_args_list == [call(1.0), call(2.0)][:failures]
 
 
 @pytest.mark.parametrize(

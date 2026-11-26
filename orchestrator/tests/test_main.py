@@ -20,6 +20,17 @@ import pytest
 import rorch.__main__ as daemon
 from rorch.config import PoolConfig
 from rorch.docker_client import ORCHESTRATOR_CONTAINER
+from rorch.errors import DockerInventoryError
+from rorch.federation import (
+    PEER_PATH,
+    Federation,
+    FederationConfig,
+    PeerConfig,
+    create_peer_app,
+    slot_for,
+    validate_snapshot,
+)
+from rorch.hostmetrics import HostMetrics
 from rorch.resolver import EffectiveConfig
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX
 from rorch.store import PoolState
@@ -328,3 +339,44 @@ class TestFederationWiring:
         assert list(own["pools"]) == [pool.name]
         state = daemon._host_state(runtime)
         assert state["federation"]["peers"][0]["error"] == "down"
+
+    def test_refresh_withdraws_peer_capacity_until_inventory_recovers(
+        self, pool: PoolConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        metrics = HostMetrics(
+            cores=4, cpu_count=4, load1=0, mem_total_mb=0, mem_available_mb=0, temp_c=None
+        )
+        monkeypatch.setattr(daemon.hostmetrics, "read", lambda: metrics)
+        fetch = MagicMock(side_effect=TimeoutError("down"))
+        config = FederationConfig(enabled=True, peers=(PeerConfig("pve3", "http://p:8081"),))
+        federation = Federation(config, "tok", fetch=fetch)
+        runtime = MagicMock(pools=[replace(pool, instance="orch")], federation=federation)
+        runtime.scaler.pool_counts.return_value = {
+            pool.name: {"running": 2, "busy": 1, "max_runners": 5},
+        }
+        runtime.docker.running_containers.side_effect = [
+            ["a", "b"],
+            DockerInventoryError("docker ps failed"),
+            ["a", "b"],
+        ]
+        effective = MagicMock(pools=[pool], max_total_runners=6)
+        client = create_peer_app(federation).test_client()
+        headers = {"Authorization": "Bearer tok"}
+
+        daemon._refresh_federation(runtime, effective)
+        healthy = validate_snapshot(client.get(PEER_PATH, headers=headers).get_json())
+        healthy_slot = slot_for(healthy, pool.name, config.max_temp_c)
+        assert healthy_slot is not None and healthy_slot.capacity == 4
+
+        daemon._refresh_federation(runtime, effective)
+        response = client.get(PEER_PATH, headers=headers)
+        assert response.status_code == 200
+        unavailable = validate_snapshot(response.get_json())
+        assert unavailable["global_free"] == 0
+        assert slot_for(unavailable, pool.name, config.max_temp_c) is None
+        assert fetch.call_count == 2
+
+        daemon._refresh_federation(runtime, effective)
+        recovered = validate_snapshot(client.get(PEER_PATH, headers=headers).get_json())
+        assert recovered["global_free"] == 4
+        assert slot_for(recovered, pool.name, config.max_temp_c) == healthy_slot

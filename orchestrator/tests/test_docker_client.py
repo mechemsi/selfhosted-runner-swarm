@@ -243,6 +243,16 @@ class TestContainerDetails:
         assert client.container_details("gh-runner-tt") == []
 
 
+class TestRunningContainers:
+    @pytest.mark.parametrize("output", ["", "gh-runner-tt-partial"])
+    def test_failed_listing_raises(self, monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", lambda args: (output, 1))
+
+        with pytest.raises(RuntimeError, match="failed to list running containers"):
+            client.running_containers("gh-runner-tt")
+
+
 class TestStopContainer:
     def test_removes_the_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
@@ -267,6 +277,14 @@ class TestStopContainer:
         monkeypatch.setattr(client, "_capture", fake_capture)
 
         assert client.stop_container("gh-runner-tt-aaaaaaaa") is True
+
+    def test_failed_removal_with_unknown_inventory_is_unsuccessful(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = DockerClient()
+        monkeypatch.setattr(client, "_capture", lambda args: ("", 1))
+
+        assert client.stop_container("gh-runner-tt-aaaaaaaa") is False
 
     def test_records_event_when_a_store_is_attached(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

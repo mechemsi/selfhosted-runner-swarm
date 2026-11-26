@@ -118,7 +118,7 @@ def _state_payload(deps: Deps) -> dict[str, Any]:
             ),
         },
         "rate_limit": deps.rate_limit_status(),
-        "events": deps.store.recent_events(25),
+        "events": deps.store.dashboard_events(25),
         **deps.host_state(),
         "ts": time.time(),
     }

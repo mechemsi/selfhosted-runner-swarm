@@ -12,10 +12,16 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from rorch.config import PoolConfig
-from rorch.errors import GitHubRateLimitError
+from rorch.errors import DockerInventoryError, GitHubRateLimitError
 from rorch.federation import Federation
 from rorch.protocols import ContainerManager, JobInfo, RunnerAPIClient, RunnerInfo
-from rorch.store import EVENT_DEREGISTER, PoolState, Store, TickSnapshot
+from rorch.store import (
+    EVENT_DEREGISTER,
+    EVENT_REPOSITORY_INSPECTION_FAILED,
+    PoolState,
+    Store,
+    TickSnapshot,
+)
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +157,11 @@ class PoolScaler:
         with self._cap_lock:
             cap = self._max_total_runners
             if cap > 0:
-                total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+                try:
+                    total = len(self._docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+                except DockerInventoryError as error:
+                    log.warning("[%s] Provisioning deferred: %s", pool_name, error)
+                    return 0
                 headroom = max(0, cap - total - self._reserved_spawns)
                 if to_spawn > headroom:
                     log.warning(
@@ -188,7 +198,8 @@ class PoolScaler:
     def _tick_single(self, pool: PoolConfig, draining: bool = False) -> None:
         federation = self.federation
         federated = federation is not None and federation.covers(pool.name)
-        inspection = self._inspect_pool(pool, federated=federated)
+        running_names = set(self._docker.running_containers(pool.container_prefix))
+        inspection = self._inspect_pool(pool, running_names, federated=federated)
         with self._state_lock:
             self._pool_counts[pool.name] = {
                 "running": inspection.running,
@@ -223,17 +234,20 @@ class PoolScaler:
             return
 
         repo_pools = [pool.for_repository(repo_name) for repo_name in repo_names]
-        inspections = self._inspect_pools_parallel(repo_pools, pool.repo_check_workers)
-        if inspections is None:
-            log.error("[%s] Repository inspection failed; skipping scaling", pool.name)
+        inspections, total_running = self._inspect_pools_parallel(
+            repo_pools, pool.repo_check_workers
+        )
+        if not inspections:
             return
 
         for inspection in inspections:
             self._log_inspection(inspection)
 
-        total_running = sum(inspection.running for inspection in inspections)
         if draining:
             log.info("[%s] Draining — no provisioning, busy runners finish", pool.name)
+            capacity = 0
+        elif total_running is None:
+            log.warning("[%s] Provisioning deferred: personal pool inventory is unknown", pool.name)
             capacity = 0
         else:
             # Reserve only what some repository actually needs: a reservation
@@ -268,10 +282,10 @@ class PoolScaler:
         ]
         total_to_spawn = sum(count for _, count in spawn_allocations)
         log.info(
-            "[%s] personal pool | repos=%d containers=%d/%d spawning=%d",
+            "[%s] personal pool | repos=%d containers=%s/%d spawning=%d",
             pool.name,
             len(inspections),
-            total_running,
+            "unknown" if total_running is None else total_running,
             pool.max_runners,
             total_to_spawn,
         )
@@ -283,39 +297,41 @@ class PoolScaler:
 
     def _inspect_pools_parallel(
         self, pools: list[PoolConfig], max_workers: int
-    ) -> list[PoolInspection] | None:
-        """Inspect independent repositories concurrently with a hard worker cap."""
-        worker_count = min(max_workers, len(pools))
-        inspections: list[PoolInspection] = []
-        failed = False
-        rate_limit_error: GitHubRateLimitError | None = None
-
+    ) -> tuple[list[PoolInspection], int | None]:
         with ThreadPoolExecutor(
-            max_workers=worker_count,
+            max_workers=min(max_workers, len(pools)),
             thread_name_prefix="repo-check",
         ) as executor:
-            futures = {executor.submit(self._inspect_pool, pool): pool for pool in pools}
-            for future in as_completed(futures):
-                repo_pool = futures[future]
-                try:
-                    inspections.append(future.result())
-                except GitHubRateLimitError as error:
-                    rate_limit_error = error
-                except Exception:
-                    failed = True
-                    log.error(
-                        "[%s] Repository inspection failed",
-                        repo_pool.name,
-                        exc_info=True,
-                    )
+            results = list(executor.map(self._inspect_repository, pools))
+        inspections = [inspection for inspection, _ in results if inspection is not None]
+        running_counts = [running for _, running in results if running is not None]
+        total_running = sum(running_counts) if len(running_counts) == len(results) else None
+        return inspections, total_running
 
-        if rate_limit_error is not None:
-            raise rate_limit_error
-        if failed:
-            return None
-        return sorted(inspections, key=lambda item: item.pool.repo)
+    def _inspect_repository(self, pool: PoolConfig) -> tuple[PoolInspection | None, int | None]:
+        running_count: int | None = None
+        try:
+            running_names = set(self._docker.running_containers(pool.container_prefix))
+            running_count = len(running_names)
+            return self._inspect_pool(pool, running_names), running_count
+        except GitHubRateLimitError:
+            # Every repository in the personal pool uses this token.
+            raise
+        except Exception:
+            log.warning(
+                "[%s] Repository inspection failed for %s", pool.name, pool.display, exc_info=True
+            )
+            self._record_event(
+                EVENT_REPOSITORY_INSPECTION_FAILED,
+                container="",
+                pool=pool.name,
+                reason=f"{pool.display}: see orchestrator logs for the inspection error",
+            )
+            return None, running_count
 
-    def _inspect_pool(self, pool: PoolConfig, federated: bool = False) -> PoolInspection:
+    def _inspect_pool(
+        self, pool: PoolConfig, running_names: set[str], *, federated: bool = False
+    ) -> PoolInspection:
         """Fetch Docker and GitHub state once for one pool.
 
         `federated`: `queued` becomes this host's share of the queue (see rorch.federation).
@@ -323,8 +339,6 @@ class PoolScaler:
         started = time.monotonic()
         prefix = pool.container_prefix
         self._docker.cleanup_exited(prefix)
-        running_names = set(self._docker.running_containers(prefix))
-
         runners = self._github.list_runners(pool)
         if runners is None:
             raise RuntimeError(f"failed to list runners for {pool.display}")
