@@ -154,10 +154,14 @@ The last command should print `X.Y.Z`. `make deploy` runs the pull and `up` step
 Before downgrading to a release without main-only pool support:
 
 1. Enable **drain** for every trusted pool in the dashboard, then clear any pool
-   or global pause so RORCH can finish draining. Wait until each trusted pool
-   has zero runner containers.
-2. Stop the trusted RORCH instance with `docker compose stop orchestrator`.
-3. Restore a pre-feature `config.yml` with no trusted pools and remove the
+   or global pause so RORCH can finish draining.
+2. Wait for active jobs to finish. Drain prevents new runners from being
+   provisioned, and online idle runners can remain running. In **Runner containers**,
+   use **stop** on each remaining idle runner in the trusted pools. If the
+   dashboard asks you to abort a job, decline and let it finish.
+3. Confirm the **containers** count in the **Pools** table is zero for every
+   trusted pool, then stop the instance with `docker compose stop orchestrator`.
+4. Restore a pre-feature `config.yml` with no trusted pools and remove the
    trusted PAT from both the configuration and the environment supplied to RORCH
    (including `.env`). If the dedicated instance has no pre-feature
    configuration, leave it stopped.
