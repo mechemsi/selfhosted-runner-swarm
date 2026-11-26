@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Self
 
-from rorch.config import PoolConfig
+from rorch.config import MAIN_TRUSTED_LABEL, PoolConfig
 from rorch.errors import GitHubRateLimitError
 from rorch.protocols import JobInfo, RunnerInfo
 
@@ -122,7 +122,15 @@ class GitHubClient:
         # cooldown without iterating _blocked_until while a request mutates it.
         self._blocked_until_any = 0.0
 
-    def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
+    def _request(
+        self,
+        pat: str,
+        path: str,
+        method: str = "GET",
+        *,
+        body: dict[str, object] | None = None,
+        api_version: str | None = None,
+    ) -> Any | None:
         token_key = hashlib.sha256(pat.encode()).digest()
         cache_key = (token_key, path)
 
@@ -137,8 +145,11 @@ class GitHubClient:
             req = urllib.request.Request(url, method=method)
             req.add_header("Authorization", f"Bearer {pat}")
             req.add_header("Accept", "application/vnd.github+json")
-            req.add_header("X-GitHub-Api-Version", self.API_VERSION)
+            req.add_header("X-GitHub-Api-Version", api_version or self.API_VERSION)
             req.add_header("User-Agent", "rorch-runner-orchestrator")
+            if body is not None:
+                req.data = json.dumps(body).encode()
+                req.add_header("Content-Type", "application/json")
             if cached is not None:
                 req.add_header("If-None-Match", cached.etag)
 
@@ -146,13 +157,13 @@ class GitHubClient:
                 with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
                     headers = resp.headers
                     status = resp.status
-                    body = resp.read() if method != "DELETE" else b""
+                    response_body = resp.read() if method != "DELETE" else b""
                 with self._state_lock:
                     self._update_rate_limit(token_key, headers)
                     self._secondary_failures.pop(token_key, None)
                     if method == "DELETE":
                         return status == 204
-                    data = json.loads(body)
+                    data = json.loads(response_body)
                     self._cache_conditional_response(cache_key, headers.get("ETag"), data)
                     return data
             except urllib.error.HTTPError as error:
@@ -465,9 +476,14 @@ class GitHubClient:
         """
         scan = QueueScan()
         seen: set[int] = set()
+        runs_path = f"/repos/{pool.owner}/{repo}/actions"
+        filters = ""
+        if pool.is_main_trusted:
+            runs_path += f"/workflows/{pool.main_workflow.rsplit('/', 1)[-1]}"
+            filters = "&branch=main&event=push"
         for status in _ACTIVE_RUN_STATUSES:
             runs_data = self._get_shared(
-                pool.pat, f"/repos/{pool.owner}/{repo}/actions/runs?status={status}&per_page=50"
+                pool.pat, f"{runs_path}/runs?status={status}&per_page=50{filters}"
             )
             if runs_data is None:
                 scan += QueueScan(failed=1)
@@ -495,7 +511,7 @@ class GitHubClient:
                 # Only jobs this pool's runners can take: a job for another
                 # pool's labels (or a GitHub-hosted one) must not start runners
                 # here that sit idle, or worse, take a job meant for elsewhere.
-                if pool.serves_labels(job.get("labels") or []):
+                if _serves_queued_job(pool, run, job.get("labels") or []):
                     ages.append(self._age(job))
             elif jobs is not None:
                 jobs.append(_job_info(job, run, repo))
@@ -512,11 +528,11 @@ class GitHubClient:
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         """Fetch runner state once for cleanup and scaling decisions."""
-        data = self._get(pool.pat, pool.api_runners_path)
-        if not isinstance(data, dict):
-            return None
-
-        raw_runners = data.get("runners")
+        if pool.is_main_trusted:
+            raw_runners = self._list_main_group_runners(pool)
+        else:
+            data = self._get(pool.pat, pool.api_runners_path)
+            raw_runners = data.get("runners") if isinstance(data, dict) else None
         if not isinstance(raw_runners, list):
             return None
 
@@ -541,6 +557,134 @@ class GitHubClient:
             )
         return runners
 
+    def _list_main_group_runners(self, pool: PoolConfig) -> list[object] | None:
+        page_size = 100
+        path = f"{_main_group_path(pool)}/runners?per_page={page_size}"
+        runners: list[object] = []
+        page = 1
+        while True:
+            data = self._get(pool.pat, f"{path}&page={page}")
+            if not isinstance(data, dict):
+                return None
+            entries = data.get("runners")
+            total = data.get("total_count")
+            if not isinstance(entries, list) or not isinstance(total, int):
+                return None
+            runners.extend(entries)
+            if len(runners) == total:
+                return runners
+            if len(entries) != page_size or len(runners) > total:
+                return None
+            page += 1
+
     def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool:
         """Delete one runner registration."""
         return self._delete(pool.pat, f"{pool.api_runners_path}/{runner_id}") is True
+
+    def create_main_jit_config(self, pool: PoolConfig, name: str) -> str | None:
+        """Require GitHub-side assignment rules before registering a trusted runner."""
+        group_path = _main_group_path(pool)
+        group = self._get(pool.pat, group_path)
+        if not _restricts_main_workflow(group, pool):
+            log.error(
+                "[%s] GitHub runner group must restrict access to the configured main workflow",
+                pool.name,
+            )
+            return None
+
+        policy = self._request(
+            pool.pat,
+            f"/orgs/{pool.owner}/actions/policies/{pool.main_actions_policy_id}",
+            api_version="2026-03-10",
+        )
+        if not _restricts_push_events(policy, pool):
+            log.error(
+                "[%s] GitHub Actions policy must allow only push for the main workflow", pool.name
+            )
+            return None
+
+        access = self._get(pool.pat, f"{group_path}/repositories")
+        if not _restricts_main_repository(access, pool):
+            log.error(
+                "[%s] GitHub runner group must select only the configured private repo", pool.name
+            )
+            return None
+
+        data = self._request(
+            pool.pat,
+            f"{pool.api_runners_path}/generate-jitconfig",
+            "POST",
+            body={
+                "name": name,
+                "runner_group_id": pool.main_runner_group_id,
+                "labels": [MAIN_TRUSTED_LABEL],
+                "work_folder": "_work",
+            },
+        )
+        config = data.get("encoded_jit_config") if isinstance(data, dict) else None
+        return config if isinstance(config, str) and config else None
+
+
+def _serves_queued_job(pool: PoolConfig, run: dict[str, Any], labels: list[str]) -> bool:
+    if not pool.serves_labels(labels):
+        return False
+    if not pool.is_main_trusted:
+        return True
+    return bool(labels) and run.get("event") == "push" and run.get("head_branch") == "main"
+
+
+def _main_group_path(pool: PoolConfig) -> str:
+    return f"/orgs/{pool.owner}/actions/runner-groups/{pool.main_runner_group_id}"
+
+
+def _restricts_main_workflow(group: object, pool: PoolConfig) -> bool:
+    workflow = f"{pool.owner}/{pool.repo}/{pool.main_workflow}@refs/heads/main"
+    return (
+        isinstance(group, dict)
+        and group.get("id") == pool.main_runner_group_id
+        and group.get("default") is False
+        and group.get("visibility") == "selected"
+        and group.get("allows_public_repositories") is False
+        and group.get("restricted_to_workflows") is True
+        and group.get("selected_workflows") == [workflow]
+    )
+
+
+def _restricts_push_events(policy: object, pool: PoolConfig) -> bool:
+    if not isinstance(policy, dict) or policy.get("enforcement") != "active":
+        return False
+    conditions = policy.get("conditions")
+    if not isinstance(conditions, dict) or set(conditions) != {"repository_name", "workflow_path"}:
+        return False
+    repositories = conditions["repository_name"]
+    if not isinstance(repositories, dict) or (
+        repositories.get("include") != [pool.repo] or repositories.get("exclude") != []
+    ):
+        return False
+    if conditions["workflow_path"] != {"include": [pool.main_workflow], "exclude": []}:
+        return False
+    rules = policy.get("rules")
+    return (
+        isinstance(rules, list)
+        and {
+            "type": "restrict_action_events",
+            "parameters": {"allowed_events": ["push"]},
+        }
+        in rules
+    )
+
+
+def _restricts_main_repository(access: object, pool: PoolConfig) -> bool:
+    if not isinstance(access, dict) or access.get("total_count") != 1:
+        return False
+    repositories = access.get("repositories")
+    if not isinstance(repositories, list) or len(repositories) != 1:
+        return False
+    repository = repositories[0]
+    if not isinstance(repository, dict) or repository.get("private") is not True:
+        return False
+    full_name = repository.get("full_name")
+    return (
+        isinstance(full_name, str)
+        and full_name.casefold() == f"{pool.owner}/{pool.repo}".casefold()
+    )

@@ -151,7 +151,11 @@ def _build_runtime() -> Runtime:
         rate_limit_reserve=rate_limit_reserve, max_concurrent_requests=github_concurrency
     )
     forge = ForgeClients(github, max_concurrent_requests=github_concurrency)
-    docker = DockerClient(store=store, registration_token=forge.registration_token)
+    docker = DockerClient(
+        store=store,
+        registration_token=forge.registration_token,
+        main_jit_config=github.create_main_jit_config,
+    )
     scaler = PoolScaler(forge, docker, max_total_runners=max_total_runners, store=store)
     scaler.federation = _build_federation()
     return Runtime(

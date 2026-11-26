@@ -22,8 +22,8 @@ class GiteaClient(GitHubClient):
         super().__init__(**kwargs)
         self.API_BASE = f"{base_url.rstrip('/')}/api/v1"
 
-    def _request(self, pat: str, path: str, method: str = "GET") -> Any | None:
-        return super()._request(pat, path.replace("per_page=", "limit="), method)
+    def _request(self, pat: str, path: str, method: str = "GET", **kwargs: Any) -> Any | None:
+        return super()._request(pat, path.replace("per_page=", "limit="), method, **kwargs)
 
     def registration_token(self, pool: PoolConfig) -> str | None:
         """Token that can only register runners, so a runner never holds the account token."""
