@@ -1,3 +1,9 @@
+## [1.6.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.6.0...v1.6.1) (2026-11-26)
+
+### Bug Fixes
+
+* **scaling:** isolate unreadable repositories in personal pools (CF-95) ([#54](https://github.com/mechemsi/selfhosted-runner-swarm/issues/54)) ([1848713](https://github.com/mechemsi/selfhosted-runner-swarm/commit/18487132da8f543f5f2c3642ce814ab4623a3ac7))
+
 ## [1.6.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.2...v1.6.0) (2026-11-26)
 
 ### Features
