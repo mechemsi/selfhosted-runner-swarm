@@ -369,6 +369,7 @@ def test_trusted_runner_listing_rejects_inconsistent_pages(
     second_total: int,
     second_ids: list[int | None],
 ) -> None:
+    urls: list[str] = []
     pages = iter(
         {"total_count": total, "runners": [{"id": id_, "name": f"runner-{id_}"} for id_ in ids]}
         for total, ids in ((first_total, range(1, 101)), (second_total, second_ids))
@@ -376,12 +377,15 @@ def test_trusted_runner_listing_rejects_inconsistent_pages(
 
     @contextmanager
     def urlopen(request: urllib.request.Request, *, timeout: int) -> Iterator[SimpleNamespace]:
+        urls.append(request.full_url)
         body = json.dumps(next(pages)).encode()
         yield SimpleNamespace(headers={}, status=200, read=lambda: body)
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
 
     assert trusted_runtime.forge.list_runners(trusted) is None
+    path = "https://api.github.com/orgs/test-org/actions/runner-groups/42/runners?per_page=100"
+    assert urls == [f"{path}&page={page}" for page in (1, 2)]
 
 
 @pytest.mark.parametrize(
