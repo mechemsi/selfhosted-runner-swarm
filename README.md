@@ -155,13 +155,33 @@ Before downgrading to a release without main-only pool support:
 
 1. Enable **drain** for every trusted pool in the dashboard, then clear any pool
    or global pause so RORCH can finish draining.
-2. Wait for active jobs to finish. Drain prevents new runners from being
-   provisioned, and online idle runners can remain running. In **Runner containers**,
-   use **stop** on each remaining idle runner in the trusted pools. If the
-   dashboard asks you to abort a job, decline and let it finish.
-3. Confirm the **containers** count in the **Pools** table is zero for every
-   trusted pool, then stop the instance with `docker compose stop orchestrator`.
-4. Restore a pre-feature `config.yml` with no trusted pools and remove the
+2. Block new GitHub Actions job assignments to the trusted runners before waiting
+   for active jobs to finish. For example, remove the opted-in repository's access
+   to each trusted runner group under **Settings > Actions > Runner groups**.
+   Keep assignments blocked throughout the rollback. Drain disables provisioning
+   on subsequent ticks, and registered runners can still accept jobs until GitHub
+   blocks assignments. [GitHub runner group access settings](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access#changing-which-repositories-can-access-a-runner-group)
+3. Check GitHub Actions and let active jobs on the trusted runners finish. In
+   **Runner containers**, use **stop** on each remaining idle trusted runner.
+   If the dashboard asks you to abort a job, decline and let it finish. The prompt
+   is best effort because it uses the last GitHub poll. A stale idle status can
+   cause **stop** to kill a job without prompting.
+4. On the trusted Docker host, check the live inventory for each trusted pool.
+   The **Pools** table shows a scaler snapshot that can miss newly spawned runners.
+   Substitute the pool's container prefix, including the instance name if configured
+   (for example, `gh-runner-pve3-main-ci`). Escape any dots in the prefix as `\.`:
+
+   ```bash
+   docker ps --all --filter 'name=^gh-runner-main-ci-' --format '{{.Names}} {{.Status}}'
+   ```
+
+   Once each check succeeds with no matches, run `docker compose stop orchestrator`.
+   Repeat the inventory checks after it stops, since a tick already in progress when
+   drain was enabled may still have spawned a runner. If either check finds
+   containers, let active jobs finish, remove any idle or exited containers, and
+   check again. Use Docker for removal after shutdown. Start the older release
+   only after all checks succeed with no matches.
+5. Restore a pre-feature `config.yml` with no trusted pools and remove the
    trusted PAT from both the configuration and the environment supplied to RORCH
    (including `.env`). If the dedicated instance has no pre-feature
    configuration, leave it stopped.
