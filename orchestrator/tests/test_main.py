@@ -81,7 +81,7 @@ class Wired:
             "load_ci_container_patterns": lambda: (),
             "open_store": lambda _url: self.store,
             "ConfigResolver": lambda *_args: self.resolver,
-            "GitHubClient": lambda **_kwargs: self.github,
+            "TrustedRunnerClient": lambda **_kwargs: self.github,
             "DockerClient": lambda **_kwargs: self.docker,
             "PoolScaler": lambda *_args, **_kwargs: self.scaler,
         }.items():
