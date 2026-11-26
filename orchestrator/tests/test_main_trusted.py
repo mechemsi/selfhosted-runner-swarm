@@ -384,6 +384,29 @@ def test_trusted_runner_listing_rejects_inconsistent_pages(
     assert trusted_runtime.forge.list_runners(trusted) is None
 
 
+@pytest.mark.parametrize(
+    "runner",
+    [
+        pytest.param({"id": 1}, id="missing-name"),
+        pytest.param({"id": 1, "name": 123}, id="non-string-name"),
+    ],
+)
+def test_trusted_runner_listing_rejects_invalid_names(
+    trusted: PoolConfig,
+    trusted_runtime: daemon.Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: dict[str, object],
+) -> None:
+    @contextmanager
+    def urlopen(request: urllib.request.Request, *, timeout: int) -> Iterator[SimpleNamespace]:
+        body = json.dumps({"total_count": 1, "runners": [runner]}).encode()
+        yield SimpleNamespace(headers={}, status=200, read=lambda: body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert trusted_runtime.forge.list_runners(trusted) is None
+
+
 def test_trusted_runner_uses_private_docker(
     trusted: PoolConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

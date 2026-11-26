@@ -39,7 +39,9 @@ class TrustedRunnerClient(GitHubClient):
 
 def _add_runner_ids(entries: list[object], seen_ids: set[int]) -> bool:
     for entry in entries:
-        runner_id = entry.get("id") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            return False
+        runner_id = entry.get("id")
         if type(runner_id) is not int or runner_id in seen_ids:
             return False
         seen_ids.add(runner_id)
