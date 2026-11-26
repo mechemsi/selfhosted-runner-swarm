@@ -22,6 +22,7 @@ from rorch.config import (
     validate_pools,
 )
 from rorch.docker_client import ORCHESTRATOR_CONTAINER, DockerClient
+from rorch.errors import DockerInventoryError
 from rorch.federation import Federation, build_snapshot, create_peer_app
 from rorch.gitea_client import ForgeClients
 from rorch.github_client import DEFAULT_MAX_CONCURRENT_REQUESTS, GitHubClient
@@ -229,8 +230,15 @@ def _refresh_federation(runtime: Runtime, effective: EffectiveConfig) -> None:
     }
     global_free = None
     if effective.max_total_runners:
-        running = len(runtime.docker.running_containers(GLOBAL_CONTAINER_PREFIX))
-        global_free = max(0, effective.max_total_runners - running)
+        try:
+            running = len(runtime.docker.running_containers(GLOBAL_CONTAINER_PREFIX))
+        except DockerInventoryError as error:
+            log.warning("Withdrawing local federation capacity: %s", error)
+            global_free = 0
+            # Peers also count idle runners, so withdraw the cached pool counts.
+            pools.clear()
+        else:
+            global_free = max(0, effective.max_total_runners - running)
     instance = next((p.instance for p in runtime.pools), "")
     federation.refresh(
         build_snapshot(instance, get_version(), hostmetrics.read(), pools, global_free)
