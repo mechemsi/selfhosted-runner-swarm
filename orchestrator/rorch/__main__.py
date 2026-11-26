@@ -30,6 +30,7 @@ from rorch.lanes import TickLanes
 from rorch.resolver import ConfigResolver, EffectiveConfig
 from rorch.scaler import GLOBAL_CONTAINER_PREFIX, PoolScaler
 from rorch.store import Store, open_store
+from rorch.trusted_runner_client import TrustedRunnerClient
 from rorch.version import get_version
 
 logging.basicConfig(
@@ -148,7 +149,7 @@ def _build_runtime() -> Runtime:
     github_concurrency = _bounded_env(
         "GITHUB_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS, 1, 32
     )
-    github = GitHubClient(
+    github = TrustedRunnerClient(
         rate_limit_reserve=rate_limit_reserve, max_concurrent_requests=github_concurrency
     )
     forge = ForgeClients(github, max_concurrent_requests=github_concurrency)

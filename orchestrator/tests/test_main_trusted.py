@@ -13,6 +13,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from rorch import __main__ as daemon
 from rorch.config import PoolConfig, load_config, validation_errors
 from rorch.docker_client import DockerClient
 from rorch.github_client import GitHubClient
@@ -34,6 +35,16 @@ def trusted(pool: PoolConfig) -> PoolConfig:
         runner_labels="main-trusted",
         network_mode="bridge",
     )
+
+
+@pytest.fixture
+def trusted_runtime(
+    trusted: PoolConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> daemon.Runtime:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RORCH_DB", "off")
+    monkeypatch.setattr(daemon, "load_config", lambda: [trusted])
+    return daemon._build_runtime()
 
 
 @pytest.mark.parametrize(
@@ -322,6 +333,7 @@ def test_rejects_jit_registration_without_verified_assignment_rules(
 )
 def test_trusted_runner_listing_reads_second_page(
     trusted: PoolConfig,
+    trusted_runtime: daemon.Runtime,
     monkeypatch: pytest.MonkeyPatch,
     second_page: dict[str, object] | None,
     expected_tail: list[RunnerInfo] | None,
@@ -330,14 +342,46 @@ def test_trusted_runner_listing_reads_second_page(
         {"id": index, "name": f"runner-{index}", "status": "offline"} for index in range(1, 101)
     ]
     get = Mock(side_effect=[{"total_count": 101, "runners": first_page}, second_page])
-    client = GitHubClient()
-    monkeypatch.setattr(client, "_get", get)
+    monkeypatch.setattr(trusted_runtime.github, "_get", get)
 
-    runners = client.list_runners(trusted)
+    runners = trusted_runtime.forge.list_runners(trusted)
 
     assert (runners[100:] if runners is not None else None) == expected_tail
     path = "/orgs/test-org/actions/runner-groups/42/runners?per_page=100"
     assert get.call_args_list == [call(trusted.pat, f"{path}&page={page}") for page in (1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("first_total", "second_total", "second_ids"),
+    [
+        pytest.param(101, 101, [100], id="overlapping-pages"),
+        pytest.param(102, 102, [101, 101], id="duplicate-on-page"),
+        pytest.param(101, 102, [101, 102], id="growing-total"),
+        pytest.param(102, 101, [101], id="shrinking-total"),
+        pytest.param(101, 101, [None], id="invalid-runner-id"),
+    ],
+)
+def test_trusted_runner_listing_rejects_inconsistent_pages(
+    trusted: PoolConfig,
+    trusted_runtime: daemon.Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    first_total: int,
+    second_total: int,
+    second_ids: list[int | None],
+) -> None:
+    pages = iter(
+        {"total_count": total, "runners": [{"id": id_, "name": f"runner-{id_}"} for id_ in ids]}
+        for total, ids in ((first_total, range(1, 101)), (second_total, second_ids))
+    )
+
+    @contextmanager
+    def urlopen(request: urllib.request.Request, *, timeout: int) -> Iterator[SimpleNamespace]:
+        body = json.dumps(next(pages)).encode()
+        yield SimpleNamespace(headers={}, status=200, read=lambda: body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert trusted_runtime.forge.list_runners(trusted) is None
 
 
 def test_trusted_runner_uses_private_docker(
