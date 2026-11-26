@@ -528,16 +528,11 @@ class GitHubClient:
 
     def list_runners(self, pool: PoolConfig) -> list[RunnerInfo] | None:
         """Fetch runner state once for cleanup and scaling decisions."""
-        path = (
-            f"{_main_group_path(pool)}/runners?per_page=100"
-            if pool.is_main_trusted
-            else (pool.api_runners_path)
-        )
-        data = self._get(pool.pat, path)
-        if not isinstance(data, dict):
-            return None
-
-        raw_runners = data.get("runners")
+        if pool.is_main_trusted:
+            raw_runners = self._list_main_group_runners(pool)
+        else:
+            data = self._get(pool.pat, pool.api_runners_path)
+            raw_runners = data.get("runners") if isinstance(data, dict) else None
         if not isinstance(raw_runners, list):
             return None
 
@@ -562,13 +557,34 @@ class GitHubClient:
             )
         return runners
 
+    def _list_main_group_runners(self, pool: PoolConfig) -> list[object] | None:
+        page_size = 100
+        path = f"{_main_group_path(pool)}/runners?per_page={page_size}"
+        runners: list[object] = []
+        page = 1
+        while True:
+            data = self._get(pool.pat, f"{path}&page={page}")
+            if not isinstance(data, dict):
+                return None
+            entries = data.get("runners")
+            total = data.get("total_count")
+            if not isinstance(entries, list) or not isinstance(total, int):
+                return None
+            runners.extend(entries)
+            if len(runners) == total:
+                return runners
+            if len(entries) != page_size or len(runners) > total:
+                return None
+            page += 1
+
     def deregister_runner(self, pool: PoolConfig, runner_id: int) -> bool:
         """Delete one runner registration."""
         return self._delete(pool.pat, f"{pool.api_runners_path}/{runner_id}") is True
 
     def create_main_jit_config(self, pool: PoolConfig, name: str) -> str | None:
         """Require GitHub-side assignment rules before registering a trusted runner."""
-        group = self._get(pool.pat, _main_group_path(pool))
+        group_path = _main_group_path(pool)
+        group = self._get(pool.pat, group_path)
         if not _restricts_main_workflow(group, pool):
             log.error(
                 "[%s] GitHub runner group must restrict access to the configured main workflow",
@@ -584,6 +600,13 @@ class GitHubClient:
         if not _restricts_push_events(policy, pool):
             log.error(
                 "[%s] GitHub Actions policy must allow only push for the main workflow", pool.name
+            )
+            return None
+
+        access = self._get(pool.pat, f"{group_path}/repositories")
+        if not _restricts_main_repository(access, pool):
+            log.error(
+                "[%s] GitHub runner group must select only the configured private repo", pool.name
             )
             return None
 
@@ -648,4 +671,20 @@ def _restricts_push_events(policy: object, pool: PoolConfig) -> bool:
             "parameters": {"allowed_events": ["push"]},
         }
         in rules
+    )
+
+
+def _restricts_main_repository(access: object, pool: PoolConfig) -> bool:
+    if not isinstance(access, dict) or access.get("total_count") != 1:
+        return False
+    repositories = access.get("repositories")
+    if not isinstance(repositories, list) or len(repositories) != 1:
+        return False
+    repository = repositories[0]
+    if not isinstance(repository, dict) or repository.get("private") is not True:
+        return False
+    full_name = repository.get("full_name")
+    return (
+        isinstance(full_name, str)
+        and full_name.casefold() == f"{pool.owner}/{pool.repo}".casefold()
     )

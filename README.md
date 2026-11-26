@@ -151,6 +151,14 @@ The last command should print `X.Y.Z`. `make deploy` runs the pull and `up` step
 
 ### Roll back
 
+When rolling back past support for main-only pools, first pause and drain the
+trusted pools, then stop the trusted RORCH instance. Before starting the older
+version, restore a pre-feature configuration with no trusted pool and remove
+the trusted PAT from the environment supplied to RORCH. If the dedicated
+instance has no pre-feature configuration, leave it stopped. Older versions
+ignore the `main_*` settings and can launch these pools as ordinary runners
+with the host Docker socket and trusted PAT.
+
 Set the previous version and do the same:
 
 ```bash
@@ -593,10 +601,11 @@ jobs:
       - run: docker info
 ```
 
-RORCH counts eligible pushes and verifies both GitHub restrictions before each
-just-in-time registration. GitHub enforces the restrictions when it schedules
-jobs, even while a runner is already online. Pause and drain the pool before
-editing its GitHub restrictions or rolling back to a version without this mode.
+RORCH counts eligible pushes and verifies the GitHub restrictions and selected
+repository before each just-in-time registration. GitHub enforces the
+restrictions when it schedules jobs, even while a runner is already online.
+Pause and drain the pool before editing its GitHub restrictions. Follow the
+[rollback steps](#roll-back) before downgrading to a version without this mode.
 
 Each trusted runner starts its own Docker daemon on a Unix socket inside its
 container. It uses privileged Docker-in-Docker on the dedicated host, with no

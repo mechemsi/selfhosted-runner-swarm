@@ -9,13 +9,14 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
 from rorch.config import PoolConfig, load_config, validation_errors
 from rorch.docker_client import DockerClient
 from rorch.github_client import GitHubClient
+from rorch.protocols import RunnerInfo
 from rorch.resolver import ConfigResolver
 from rorch.store import Store
 
@@ -154,6 +155,10 @@ def github_policy_responses(trusted: PoolConfig) -> list[dict[str, Any]]:
             },
             "rules": [_event_rule("push")],
         },
+        {
+            "total_count": 1,
+            "repositories": [{"full_name": f"{trusted.owner}/{trusted.repo}", "private": True}],
+        },
     ]
 
 
@@ -177,11 +182,12 @@ def test_requests_jit_registration_in_verified_group(
     assert [call.full_url for call in calls] == [
         "https://api.github.com/orgs/test-org/actions/runner-groups/42",
         "https://api.github.com/orgs/test-org/actions/policies/17",
+        "https://api.github.com/orgs/test-org/actions/runner-groups/42/repositories",
         "https://api.github.com/orgs/test-org/actions/runners/generate-jitconfig",
     ]
     assert calls[1].get_header("X-github-api-version") == "2026-03-10"
-    assert calls[2].get_method() == "POST"
-    assert json.loads(calls[2].data or b"") == {
+    assert calls[3].get_method() == "POST"
+    assert json.loads(calls[3].data or b"") == {
         "name": "runner",
         "runner_group_id": 42,
         "labels": ["main-trusted"],
@@ -199,6 +205,10 @@ def test_requests_jit_registration_in_verified_group(
         (1, "conditions", {}),
         (1, "rules", [_event_rule("push", "pull_request_target")]),
         (1, "rules", None),
+        (2, "total_count", 2),
+        (2, "repositories", []),
+        (2, "repositories", [{"full_name": "test-org/other", "private": True}]),
+        (2, "repositories", [{"full_name": "test-org/test-repo", "private": False}]),
     ],
 )
 def test_rejects_jit_registration_without_verified_assignment_rules(
@@ -211,11 +221,51 @@ def test_rejects_jit_registration_without_verified_assignment_rules(
 ) -> None:
     github_policy_responses[response_index][key] = value
     client = GitHubClient()
-    request = Mock(side_effect=[*github_policy_responses, {"encoded_jit_config": "jit-fixture"}])
+    responses = iter(github_policy_responses)
+    request = Mock(
+        side_effect=lambda pat, path, method="GET", **kwargs: (
+            {"encoded_jit_config": "jit-fixture"} if method == "POST" else next(responses)
+        )
+    )
     monkeypatch.setattr(client, "_request", request)
 
     assert client.create_main_jit_config(trusted, "runner") is None
     assert request.call_count == response_index + 1
+
+
+@pytest.mark.parametrize(
+    ("second_page", "expected_tail"),
+    [
+        (
+            {
+                "total_count": 101,
+                "runners": [
+                    {"id": 101, "name": "runner-101", "status": "online", "busy": True},
+                ],
+            },
+            [RunnerInfo(id=101, name="runner-101", status="online", busy=True)],
+        ),
+        (None, None),
+    ],
+)
+def test_trusted_runner_listing_reads_second_page(
+    trusted: PoolConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    second_page: dict[str, object] | None,
+    expected_tail: list[RunnerInfo] | None,
+) -> None:
+    first_page = [
+        {"id": index, "name": f"runner-{index}", "status": "offline"} for index in range(1, 101)
+    ]
+    get = Mock(side_effect=[{"total_count": 101, "runners": first_page}, second_page])
+    client = GitHubClient()
+    monkeypatch.setattr(client, "_get", get)
+
+    runners = client.list_runners(trusted)
+
+    assert (runners[100:] if runners is not None else None) == expected_tail
+    path = "/orgs/test-org/actions/runner-groups/42/runners?per_page=100"
+    assert get.call_args_list == [call(trusted.pat, f"{path}&page={page}") for page in (1, 2)]
 
 
 def test_trusted_runner_uses_private_docker(
