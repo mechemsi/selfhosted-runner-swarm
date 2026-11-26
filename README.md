@@ -151,15 +151,22 @@ The last command should print `X.Y.Z`. `make deploy` runs the pull and `up` step
 
 ### Roll back
 
-When rolling back past support for main-only pools, first pause and drain the
-trusted pools, then stop the trusted RORCH instance. Before starting the older
-version, restore a pre-feature configuration with no trusted pool and remove
-the trusted PAT from the environment supplied to RORCH. If the dedicated
-instance has no pre-feature configuration, leave it stopped. Older versions
-ignore the `main_*` settings and can launch these pools as ordinary runners
-with the host Docker socket and trusted PAT.
+Before downgrading to a release without main-only pool support:
 
-Set the previous version and do the same:
+1. Enable **drain** for every trusted pool in the dashboard, then clear any pool
+   or global pause so RORCH can finish draining. Wait until each trusted pool
+   has zero runner containers.
+2. Stop the trusted RORCH instance with `docker compose stop orchestrator`.
+3. Restore a pre-feature `config.yml` with no trusted pools and remove the
+   trusted PAT from both the configuration and the environment supplied to RORCH
+   (including `.env`). If the dedicated instance has no pre-feature
+   configuration, leave it stopped.
+
+Older versions ignore the `main_*` settings and can register a leftover trusted
+pool as ordinary repository runners with the host Docker socket and trusted PAT.
+
+For an affected instance, proceed only after restoring the pre-feature
+configuration and removing the trusted PAT. Select the previous version:
 
 ```bash
 git tag --sort=-v:refname | head -3      # find the previous release
