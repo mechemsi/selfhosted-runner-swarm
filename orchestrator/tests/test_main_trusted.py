@@ -278,6 +278,8 @@ def test_trusted_runner_uses_private_docker(
 
     assert client.spawn_runner(trusted)
     args = launch.call_args.args[0]
+    assert "--entrypoint" in args
+    assert args[args.index("--entrypoint") + 1] == "/main-trusted-entrypoint.sh"
     assert "RORCH_MAIN_JIT_CONFIG=jit-fixture" in args
     assert "--privileged" in args
     assert args[args.index("--network") + 1] == "bridge"
