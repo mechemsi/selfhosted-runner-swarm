@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.2...v1.6.0) (2026-11-26)
+
+### Features
+
+* **runner:** isolate main-only pools (CF-147) ([#55](https://github.com/mechemsi/selfhosted-runner-swarm/issues/55)) ([e4aeb56](https://github.com/mechemsi/selfhosted-runner-swarm/commit/e4aeb56e915e43d9cdef33bea5761cbe1d860e58))
+
 ## [1.5.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.5.1...v1.5.2) (2026-11-23)
 
 ### Bug Fixes
