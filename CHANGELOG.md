@@ -1,3 +1,9 @@
+## [1.6.2](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.6.1...v1.6.2) (2026-11-26)
+
+### Bug Fixes
+
+* **scaling:** reject inconsistent trusted runner inventories (CF-205) ([#56](https://github.com/mechemsi/selfhosted-runner-swarm/issues/56)) ([84217ea](https://github.com/mechemsi/selfhosted-runner-swarm/commit/84217ea3df1366ffea81360bda97dbffd60bdae7))
+
 ## [1.6.1](https://github.com/mechemsi/selfhosted-runner-swarm/compare/v1.6.0...v1.6.1) (2026-11-26)
 
 ### Bug Fixes
